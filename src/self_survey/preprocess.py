@@ -1,14 +1,15 @@
 """
-Preprocess LiDAR data: merge tiles, drape orthoimagery, and clip to radius.
+Preprocess LiDAR data for property surveys.
 
-This script consolidates the lidar preprocessing pipeline into a single command:
-1. Merge one or more LAS/LAZ tiles into a single point cloud
-2. Optionally colorize from orthoimagery TIFFs
-3. Clip to a circular region around a lat/lon point
+Commands:
+    ingest   - Merge NYS LiDAR tiles, drape orthoimagery, and clip to radius
+    register - Register iPhone LiDAR scan to NYS reference and merge
 
 Usage:
-    python -m self_survey.preprocess tile1.laz tile2.laz --ortho ortho.tif \
+    preprocess ingest tile1.laz tile2.laz --ortho ortho.tif \
         --lat 42.4532 --lon -73.7891 --radius 100 -o output.laz
+
+    preprocess register iphone_scan.laz --reference nys_data.laz -o merged.laz
 """
 
 from pathlib import Path
@@ -18,26 +19,14 @@ import cyclopts
 import laspy
 import numpy as np
 
-from self_survey.merge_lidar_tiles import (
-    load_las_to_open3d,
-    merge_point_clouds,
-    save_as_laz,
-)
-from self_survey.colorize_from_ortho import colorize_point_cloud
-from self_survey.clip_to_radius import (
-    get_crs_from_las,
-    transform_latlon_to_crs,
-    clip_to_radius,
-)
-
 app = cyclopts.App(
     name="preprocess",
-    help="Preprocess LiDAR data: merge tiles, drape orthoimagery, and clip to radius.",
+    help="Preprocess LiDAR data for property surveys.",
 )
 
 
-@app.default
-def preprocess(
+@app.command(name="ingest")
+def ingest(
     tiles: Annotated[
         list[Path],
         cyclopts.Parameter(
@@ -60,7 +49,8 @@ def preprocess(
     output: Annotated[
         Path,
         cyclopts.Parameter(
-            "--output", "-o",
+            "--output",
+            "-o",
             help="Output LAZ/LAS file path",
         ),
     ],
@@ -68,7 +58,7 @@ def preprocess(
         list[Path] | None,
         cyclopts.Parameter(
             help="Orthoimagery TIFF file(s) to drape over the point cloud. "
-                 "If multiple orthos are provided, they are applied in order.",
+            "If multiple orthos are provided, they are applied in order.",
         ),
     ] = None,
     radius_units: Annotated[
@@ -91,7 +81,7 @@ def preprocess(
     ] = False,
 ) -> None:
     """
-    Process LiDAR tiles: merge, colorize from orthoimagery, and clip to radius.
+    Ingest NYS LiDAR data: merge tiles, colorize from orthoimagery, and clip to radius.
 
     The processing pipeline:
     1. Load and merge all input LAS/LAZ tiles
@@ -99,8 +89,20 @@ def preprocess(
     3. Clip to a circular region around the specified lat/lon point
     4. Save the result
     """
-    import open3d as o3d  # Lazy import for faster --help
+    import open3d as o3d
     from pyproj import CRS
+
+    from self_survey.merge_lidar_tiles import (
+        load_las_to_open3d,
+        merge_point_clouds,
+        save_as_laz,
+    )
+    from self_survey.colorize_from_ortho import colorize_point_cloud
+    from self_survey.clip_to_radius import (
+        get_crs_from_las,
+        transform_latlon_to_crs,
+        clip_to_radius,
+    )
 
     # Validate inputs
     for tile in tiles:
@@ -277,6 +279,213 @@ def preprocess(
     print("=" * 60)
     print(f"\nOutput: {output}")
     print(f"Points: {clipped_count:,}")
+
+
+@app.command(name="register")
+def register(
+    iphone_scan: Annotated[
+        Path,
+        cyclopts.Parameter(
+            help="iPhone LiDAR scan (LAS/LAZ from Polycam or similar)",
+        ),
+    ],
+    *,
+    reference: Annotated[
+        Path,
+        cyclopts.Parameter(
+            "--reference",
+            "-r",
+            help="Reference LAS/LAZ file (NYS LiDAR, output from 'ingest' command)",
+        ),
+    ],
+    output: Annotated[
+        Path,
+        cyclopts.Parameter(
+            "--output",
+            "-o",
+            help="Output merged LAZ/LAS file path",
+        ),
+    ],
+    icp_distance: Annotated[
+        float,
+        cyclopts.Parameter(
+            help="Maximum correspondence distance for ICP alignment (in file units)",
+        ),
+    ] = 10.0,
+    icp_iterations: Annotated[
+        int,
+        cyclopts.Parameter(
+            help="Maximum ICP iterations",
+        ),
+    ] = 50,
+    ground_only: Annotated[
+        bool,
+        cyclopts.Parameter(
+            help="Use only ground points (classification=2) for ICP alignment",
+        ),
+    ] = True,
+    replacement_radius: Annotated[
+        float | None,
+        cyclopts.Parameter(
+            help="Radius around iPhone scan center to replace reference points. "
+            "If not specified, auto-calculated from iPhone scan extent.",
+        ),
+    ] = None,
+    skip_icp: Annotated[
+        bool,
+        cyclopts.Parameter(
+            help="Skip ICP alignment (use only if scans are already well-aligned)",
+        ),
+    ] = False,
+) -> None:
+    """
+    Register an iPhone LiDAR scan to NYS reference data and merge.
+
+    The processing pipeline:
+    1. Load iPhone scan and reference data
+    2. Transform iPhone scan to reference CRS (if different)
+    3. Align using ICP on ground points
+    4. Merge, replacing reference points in overlap region with iPhone data
+    """
+    from pyproj import CRS
+
+    from self_survey.clip_to_radius import get_crs_from_las
+    from self_survey.register_iphone import (
+        load_and_transform_to_crs,
+        extract_ground_points,
+        icp_align,
+        apply_transform_to_las,
+        merge_with_replacement,
+    )
+
+    # Validate inputs
+    if not iphone_scan.exists():
+        raise cyclopts.ValidationError(f"iPhone scan not found: {iphone_scan}")
+
+    if not reference.exists():
+        raise cyclopts.ValidationError(f"Reference file not found: {reference}")
+
+    # Step 1: Load reference data
+    print("=" * 60)
+    print("STEP 1: Loading reference data")
+    print("=" * 60)
+
+    print(f"\nLoading {reference}...")
+    ref_las = laspy.read(str(reference))
+    ref_crs = get_crs_from_las(ref_las)
+
+    if ref_crs is None:
+        raise cyclopts.ValidationError(
+            "Could not detect CRS from reference file. "
+            "Please ensure the reference file has CRS metadata."
+        )
+
+    print(f"  Reference CRS: {ref_crs.name}")
+    print(f"  Reference points: {len(ref_las.points):,}")
+    print(f"  Bounds X: [{ref_las.x.min():.2f}, {ref_las.x.max():.2f}]")
+    print(f"  Bounds Y: [{ref_las.y.min():.2f}, {ref_las.y.max():.2f}]")
+    print(f"  Bounds Z: [{ref_las.z.min():.2f}, {ref_las.z.max():.2f}]")
+
+    # Step 2: Load and transform iPhone scan
+    print("\n" + "=" * 60)
+    print("STEP 2: Loading and transforming iPhone scan")
+    print("=" * 60)
+
+    iphone_las, iphone_crs, transform_offset = load_and_transform_to_crs(
+        str(iphone_scan), ref_crs
+    )
+
+    print(f"  iPhone points: {len(iphone_las.points):,}")
+    print(f"  Bounds X: [{iphone_las.x.min():.2f}, {iphone_las.x.max():.2f}]")
+    print(f"  Bounds Y: [{iphone_las.y.min():.2f}, {iphone_las.y.max():.2f}]")
+    print(f"  Bounds Z: [{iphone_las.z.min():.2f}, {iphone_las.z.max():.2f}]")
+
+    # Step 3: ICP alignment
+    if not skip_icp:
+        print("\n" + "=" * 60)
+        print("STEP 3: ICP alignment on ground points")
+        print("=" * 60)
+
+        # Extract ground points for alignment
+        print("\nExtracting ground points from reference...")
+        ref_ground, ref_ground_mask = extract_ground_points(ref_las, classification=2)
+
+        print("\nExtracting ground points from iPhone scan...")
+        iphone_ground, iphone_ground_mask = extract_ground_points(
+            iphone_las, classification=2
+        )
+
+        if len(iphone_ground) < 100:
+            print(
+                f"\n  WARNING: Only {len(iphone_ground)} ground points in iPhone scan."
+            )
+            print("  ICP alignment may be unreliable.")
+            print("  Consider using --skip-icp if the scan is already well-aligned,")
+            print("  or check if Polycam classified ground points correctly.")
+
+            # Fall back to all points if not enough ground points
+            if len(iphone_ground) < 10:
+                print("\n  Using all points for alignment instead...")
+                iphone_ground = np.vstack(
+                    (iphone_las.x, iphone_las.y, iphone_las.z)
+                ).T
+                ref_ground = np.vstack((ref_las.x, ref_las.y, ref_las.z)).T
+
+        # Run ICP
+        print("\nRunning ICP alignment...")
+        transform, icp_info = icp_align(
+            source_points=iphone_ground,
+            target_points=ref_ground,
+            max_correspondence_distance=icp_distance,
+            max_iterations=icp_iterations,
+        )
+
+        # Check alignment quality
+        if icp_info["fitness"] < 0.3:
+            print("\n  WARNING: Low ICP fitness score.")
+            print("  The alignment may be poor. Consider:")
+            print("  - Checking that both scans cover overlapping areas")
+            print("  - Increasing --icp-distance")
+            print("  - Verifying the iPhone scan is georeferenced correctly")
+
+        # Apply transformation to iPhone scan
+        print("\nApplying transformation to iPhone scan...")
+        iphone_las = apply_transform_to_las(iphone_las, transform)
+
+        print(f"  New bounds X: [{iphone_las.x.min():.2f}, {iphone_las.x.max():.2f}]")
+        print(f"  New bounds Y: [{iphone_las.y.min():.2f}, {iphone_las.y.max():.2f}]")
+        print(f"  New bounds Z: [{iphone_las.z.min():.2f}, {iphone_las.z.max():.2f}]")
+    else:
+        print("\n" + "=" * 60)
+        print("STEP 3: Skipping ICP alignment (--skip-icp)")
+        print("=" * 60)
+
+    # Step 4: Merge with replacement
+    print("\n" + "=" * 60)
+    print("STEP 4: Merging point clouds")
+    print("=" * 60)
+
+    merged_las = merge_with_replacement(
+        reference_las=ref_las,
+        iphone_las=iphone_las,
+        replacement_radius=replacement_radius,
+    )
+
+    # Step 5: Save output
+    print("\n" + "=" * 60)
+    print("STEP 5: Saving output")
+    print("=" * 60)
+
+    print(f"\nSaving to {output}...")
+    merged_las.write(str(output))
+    file_size = output.stat().st_size / (1024 * 1024)
+    print(f"  File size: {file_size:.1f} MB")
+
+    print("\n" + "=" * 60)
+    print("DONE!")
+    print("=" * 60)
+    print(f"\nOutput: {output}")
+    print(f"Total points: {len(merged_las.points):,}")
 
 
 def main() -> None:
