@@ -1,15 +1,72 @@
 """
 Colorize a point cloud from orthoimagery.
 
+This module provides functions to drape RGB colors from orthoimagery
+onto LiDAR point clouds by sampling pixel values at each point location.
+
 Dependencies:
     pip install laspy[lazrs] numpy rasterio open3d
 """
 
 import numpy as np
 import laspy
-import rasterio
-from rasterio.windows import Window
 import open3d as o3d
+import rasterio
+
+__all__ = ["colorize_point_cloud", "colorize_from_ortho"]
+
+
+def colorize_point_cloud(
+    pcd: o3d.geometry.PointCloud,
+    ortho_path: str,
+) -> o3d.geometry.PointCloud:
+    """
+    Add RGB colors to an Open3D point cloud by sampling from an orthophoto.
+
+    Args:
+        pcd: Open3D point cloud with XY coordinates in the same CRS as the ortho
+        ortho_path: Path to orthoimagery GeoTIFF file
+
+    Returns:
+        The same point cloud with colors updated from the orthophoto
+    """
+    print(f"  Opening {ortho_path}...")
+
+    points = np.asarray(pcd.points)
+    xs = points[:, 0]
+    ys = points[:, 1]
+
+    with rasterio.open(ortho_path) as ortho:
+        # Transform point coordinates to raster pixel coordinates
+        rows, cols = rasterio.transform.rowcol(ortho.transform, xs, ys)
+        rows = np.array(rows)
+        cols = np.array(cols)
+
+        # Clamp to image bounds
+        rows = np.clip(rows, 0, ortho.height - 1)
+        cols = np.clip(cols, 0, ortho.width - 1)
+
+        # Read the full image
+        print("  Reading orthoimagery...")
+        rgb = ortho.read([1, 2, 3])  # Assumes bands 1,2,3 are RGB
+
+        # Sample colors at each point
+        print("  Sampling colors...")
+        red = rgb[0, rows, cols]
+        green = rgb[1, rows, cols]
+        blue = rgb[2, rows, cols]
+
+    # Normalize to 0-1 range for Open3D (assuming 8-bit ortho)
+    colors = np.column_stack([
+        red.astype(np.float64) / 255.0,
+        green.astype(np.float64) / 255.0,
+        blue.astype(np.float64) / 255.0,
+    ])
+
+    pcd.colors = o3d.utility.Vector3dVector(colors)
+    print(f"  Colorized {len(points):,} points")
+
+    return pcd
 
 
 def colorize_from_ortho(las_path: str, ortho_path: str, output_path: str):
