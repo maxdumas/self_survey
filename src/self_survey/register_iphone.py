@@ -18,6 +18,8 @@ __all__ = [
     "load_and_transform_to_crs",
     "extract_ground_points",
     "icp_align",
+    "apply_transform_to_las",
+    "transfer_ground_classification",
     "merge_with_replacement",
 ]
 
@@ -273,6 +275,106 @@ def apply_transform_to_las(
         new_las.return_number = las.return_number
     if hasattr(las, "number_of_returns"):
         new_las.number_of_returns = las.number_of_returns
+
+    return new_las
+
+
+def transfer_ground_classification(
+    iphone_las: laspy.LasData,
+    reference_ground_points: np.ndarray,
+    horizontal_tolerance: float = 1.0,
+    vertical_tolerance: float = 0.5,
+) -> laspy.LasData:
+    """
+    Transfer ground classification from reference to iPhone points.
+
+    For each iPhone point, if there's a nearby reference ground point
+    within the specified tolerances, classify it as ground.
+
+    Args:
+        iphone_las: iPhone LAS data (will be modified)
+        reference_ground_points: Nx3 array of reference ground points
+        horizontal_tolerance: Max horizontal distance to consider (file units)
+        vertical_tolerance: Max vertical distance to consider (file units)
+
+    Returns:
+        iPhone LAS data with updated classification
+    """
+    print("Transferring ground classification to iPhone points...")
+
+    iphone_points = np.vstack((iphone_las.x, iphone_las.y, iphone_las.z)).T
+    print(f"  iPhone points: {len(iphone_points):,}")
+    print(f"  Reference ground points: {len(reference_ground_points):,}")
+    print(f"  Horizontal tolerance: {horizontal_tolerance}")
+    print(f"  Vertical tolerance: {vertical_tolerance}")
+
+    # Build KD-tree of reference ground points (2D for horizontal search)
+    ref_xy = reference_ground_points[:, :2]
+    ref_z = reference_ground_points[:, 2]
+
+    # Use Open3D KD-tree for efficient nearest neighbor search
+    ref_pcd = o3d.geometry.PointCloud()
+    ref_pcd.points = o3d.utility.Vector3dVector(
+        np.column_stack([ref_xy, np.zeros(len(ref_xy))])  # 2D search
+    )
+    ref_tree = o3d.geometry.KDTreeFlann(ref_pcd)
+
+    # For each iPhone point, find nearby reference ground points
+    iphone_xy = iphone_points[:, :2]
+    iphone_z = iphone_points[:, 2]
+
+    ground_mask = np.zeros(len(iphone_points), dtype=bool)
+
+    # Batch process for efficiency
+    for i in range(len(iphone_points)):
+        query_point = np.array([iphone_xy[i, 0], iphone_xy[i, 1], 0.0])
+
+        # Find points within horizontal tolerance
+        [k, idx, dist_sq] = ref_tree.search_radius_vector_3d(
+            query_point, horizontal_tolerance
+        )
+
+        if k > 0:
+            # Check vertical distance to nearest ground points
+            nearby_z = ref_z[idx]
+            z_diff = np.abs(iphone_z[i] - nearby_z)
+
+            if np.min(z_diff) <= vertical_tolerance:
+                ground_mask[i] = True
+
+    # Update classification
+    new_classification = np.array(iphone_las.classification)
+    new_classification[ground_mask] = 2  # Ground classification
+
+    ground_count = np.sum(ground_mask)
+    print(f"  Points classified as ground: {ground_count:,} ({100*ground_count/len(iphone_points):.1f}%)")
+
+    # Create new LAS with updated classification
+    new_header = laspy.LasHeader(
+        point_format=iphone_las.header.point_format, version="1.4"
+    )
+    new_header.scales = iphone_las.header.scales
+    new_header.offsets = iphone_las.header.offsets
+
+    for vlr in iphone_las.header.vlrs:
+        new_header.vlrs.append(vlr)
+
+    new_las = laspy.LasData(new_header)
+    new_las.x = iphone_las.x
+    new_las.y = iphone_las.y
+    new_las.z = iphone_las.z
+    new_las.intensity = iphone_las.intensity
+    new_las.classification = new_classification
+
+    if hasattr(iphone_las, "red"):
+        new_las.red = iphone_las.red
+        new_las.green = iphone_las.green
+        new_las.blue = iphone_las.blue
+
+    if hasattr(iphone_las, "return_number"):
+        new_las.return_number = iphone_las.return_number
+    if hasattr(iphone_las, "number_of_returns"):
+        new_las.number_of_returns = iphone_las.number_of_returns
 
     return new_las
 

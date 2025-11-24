@@ -318,12 +318,24 @@ def register(
             help="Maximum ICP iterations",
         ),
     ] = 50,
-    ground_only: Annotated[
+    transfer_classification: Annotated[
         bool,
         cyclopts.Parameter(
-            help="Use only ground points (classification=2) for ICP alignment",
+            help="Transfer ground classification from reference to iPhone points",
         ),
     ] = True,
+    horizontal_tolerance: Annotated[
+        float,
+        cyclopts.Parameter(
+            help="Horizontal tolerance for ground classification transfer (file units)",
+        ),
+    ] = 1.0,
+    vertical_tolerance: Annotated[
+        float,
+        cyclopts.Parameter(
+            help="Vertical tolerance for ground classification transfer (file units)",
+        ),
+    ] = 0.5,
     replacement_radius: Annotated[
         float | None,
         cyclopts.Parameter(
@@ -344,8 +356,9 @@ def register(
     The processing pipeline:
     1. Load iPhone scan and reference data
     2. Transform iPhone scan to reference CRS (if different)
-    3. Align using ICP on ground points
-    4. Merge, replacing reference points in overlap region with iPhone data
+    3. Align using ICP (reference ground points → all iPhone points)
+    4. Transfer ground classification from reference to iPhone points
+    5. Merge, replacing reference points in overlap region with iPhone data
     """
     from pyproj import CRS
 
@@ -355,6 +368,7 @@ def register(
         extract_ground_points,
         icp_align,
         apply_transform_to_las,
+        transfer_ground_classification,
         merge_with_replacement,
     )
 
@@ -401,52 +415,44 @@ def register(
     print(f"  Bounds Z: [{iphone_las.z.min():.2f}, {iphone_las.z.max():.2f}]")
 
     # Step 3: ICP alignment
+    # Strategy: Use reference GROUND points as target, ALL iPhone points as source
+    # The ICP correspondence distance will naturally filter out non-ground iPhone points
     if not skip_icp:
         print("\n" + "=" * 60)
-        print("STEP 3: ICP alignment on ground points")
+        print("STEP 3: ICP alignment (ground-to-all strategy)")
         print("=" * 60)
 
-        # Extract ground points for alignment
+        # Extract ground points from reference (target)
         print("\nExtracting ground points from reference...")
         ref_ground, ref_ground_mask = extract_ground_points(ref_las, classification=2)
 
-        print("\nExtracting ground points from iPhone scan...")
-        iphone_ground, iphone_ground_mask = extract_ground_points(
-            iphone_las, classification=2
-        )
+        if len(ref_ground) < 100:
+            print(f"\n  WARNING: Only {len(ref_ground)} ground points in reference.")
+            print("  Consider checking that reference data has ground classification.")
 
-        if len(iphone_ground) < 100:
-            print(
-                f"\n  WARNING: Only {len(iphone_ground)} ground points in iPhone scan."
-            )
-            print("  ICP alignment may be unreliable.")
-            print("  Consider using --skip-icp if the scan is already well-aligned,")
-            print("  or check if Polycam classified ground points correctly.")
+        # Use ALL iPhone points as source
+        print("\nUsing all iPhone points for alignment...")
+        iphone_all_points = np.vstack(
+            (iphone_las.x, iphone_las.y, iphone_las.z)
+        ).T
+        print(f"  iPhone points: {len(iphone_all_points):,}")
 
-            # Fall back to all points if not enough ground points
-            if len(iphone_ground) < 10:
-                print("\n  Using all points for alignment instead...")
-                iphone_ground = np.vstack(
-                    (iphone_las.x, iphone_las.y, iphone_las.z)
-                ).T
-                ref_ground = np.vstack((ref_las.x, ref_las.y, ref_las.z)).T
-
-        # Run ICP
+        # Run ICP: iPhone all points -> Reference ground points
+        # Non-ground iPhone points won't find correspondences within icp_distance
         print("\nRunning ICP alignment...")
+        print("  (iPhone all points → Reference ground points)")
         transform, icp_info = icp_align(
-            source_points=iphone_ground,
+            source_points=iphone_all_points,
             target_points=ref_ground,
             max_correspondence_distance=icp_distance,
             max_iterations=icp_iterations,
         )
 
         # Check alignment quality
-        if icp_info["fitness"] < 0.3:
+        if icp_info["fitness"] < 0.1:
             print("\n  WARNING: Low ICP fitness score.")
-            print("  The alignment may be poor. Consider:")
-            print("  - Checking that both scans cover overlapping areas")
-            print("  - Increasing --icp-distance")
-            print("  - Verifying the iPhone scan is georeferenced correctly")
+            print("  This is expected if the iPhone scan has many non-ground points.")
+            print("  Check the translation values to verify alignment looks reasonable.")
 
         # Apply transformation to iPhone scan
         print("\nApplying transformation to iPhone scan...")
@@ -459,10 +465,33 @@ def register(
         print("\n" + "=" * 60)
         print("STEP 3: Skipping ICP alignment (--skip-icp)")
         print("=" * 60)
+        ref_ground = None
 
-    # Step 4: Merge with replacement
+    # Step 4: Transfer ground classification
+    if transfer_classification:
+        print("\n" + "=" * 60)
+        print("STEP 4: Transferring ground classification")
+        print("=" * 60)
+
+        # Get reference ground points if we didn't already extract them
+        if ref_ground is None:
+            print("\nExtracting ground points from reference...")
+            ref_ground, _ = extract_ground_points(ref_las, classification=2)
+
+        iphone_las = transfer_ground_classification(
+            iphone_las,
+            ref_ground,
+            horizontal_tolerance=horizontal_tolerance,
+            vertical_tolerance=vertical_tolerance,
+        )
+    else:
+        print("\n" + "=" * 60)
+        print("STEP 4: Skipping classification transfer (--no-transfer-classification)")
+        print("=" * 60)
+
+    # Step 5: Merge with replacement
     print("\n" + "=" * 60)
-    print("STEP 4: Merging point clouds")
+    print("STEP 5: Merging point clouds")
     print("=" * 60)
 
     merged_las = merge_with_replacement(
@@ -471,9 +500,9 @@ def register(
         replacement_radius=replacement_radius,
     )
 
-    # Step 5: Save output
+    # Step 6: Save output
     print("\n" + "=" * 60)
-    print("STEP 5: Saving output")
+    print("STEP 6: Saving output")
     print("=" * 60)
 
     print(f"\nSaving to {output}...")
