@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-preprocess = "self_survey.preprocess:main"
+preprocess = "self_survey.cli:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]
