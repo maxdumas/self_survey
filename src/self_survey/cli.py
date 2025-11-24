@@ -17,6 +17,9 @@ Usage
     # Generate elevation contours
     preprocess contour merged.laz -o contours.dxf --interval 2
 
+    # Export as 3D Gaussian Splat
+    preprocess splat merged.laz --photos ./photos/ -o scene.ply
+
 See README.md for detailed documentation.
 """
 
@@ -25,6 +28,7 @@ import cyclopts
 from self_survey.commands.ingest import ingest
 from self_survey.commands.register import register
 from self_survey.commands.contour import contour
+from self_survey.commands.splat import splat
 
 app = cyclopts.App(
     name="preprocess",
@@ -35,6 +39,7 @@ app = cyclopts.App(
 app.command(ingest, name="ingest")
 app.command(register, name="register")
 app.command(contour, name="contour")
+app.command(splat, name="splat")
 
 
 def main() -> None:
