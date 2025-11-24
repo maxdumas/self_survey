@@ -4,7 +4,44 @@ Register and merge iPhone LiDAR scans with NYS reference data.
 This module provides functions for:
 - Loading and transforming point clouds to a common CRS
 - ICP (Iterative Closest Point) alignment using ground points
+- Transferring ground classification from reference to iPhone data
 - Merging point clouds with replacement in overlap regions
+
+Algorithmic Overview
+--------------------
+
+**Ground-to-All ICP Strategy**
+
+iPhone scans from Polycam don't include ground classification. Instead of
+requiring ground-to-ground alignment, we use a "ground-to-all" strategy:
+
+- Target: Reference (NYS) GROUND points only (classification=2)
+- Source: ALL iPhone points
+
+This works because:
+1. ICP's max_correspondence_distance naturally filters non-ground iPhone points
+   (trees, vegetation won't find nearby ground correspondences)
+2. The ground surface is the most reliable common feature between aerial
+   LiDAR and iPhone scans, especially in woodland environments
+3. Point-to-plane ICP is well-suited to ground surfaces
+
+**Ground Classification Transfer**
+
+After alignment, we infer ground classification for iPhone points by proximity
+to the reference ground surface:
+
+For each iPhone point (x, y, z):
+    1. Find reference ground points within horizontal_tolerance of (x, y)
+    2. If any have |z_ref - z_iphone| <= vertical_tolerance:
+       → Classify as ground (code 2)
+
+This preserves the professional ground classification from NYS data while
+enabling consistent downstream processing of the merged point cloud.
+
+**Merge Strategy**
+
+iPhone data REPLACES (not blends with) NYS data in the overlap region.
+This avoids double-density artifacts and provides clear data provenance.
 """
 
 import numpy as np
@@ -149,15 +186,40 @@ def icp_align(
     """
     Perform ICP alignment of source points to target points.
 
+    Uses point-to-plane ICP, which is better suited for ground surfaces than
+    point-to-point ICP. Point-to-plane minimizes the distance from source
+    points to the tangent plane at corresponding target points, which handles
+    the case where point densities differ between source and target.
+
+    In the ground-to-all strategy:
+    - source_points: ALL iPhone points
+    - target_points: Reference GROUND points only
+
+    Points in source that are farther than max_correspondence_distance from
+    any target point won't contribute to the alignment. This naturally filters
+    out non-ground iPhone points (trees, vegetation) since they won't have
+    nearby correspondences in the ground-only target.
+
     Args:
-        source_points: Nx3 array of source points (to be transformed)
-        target_points: Mx3 array of target points (reference)
-        max_correspondence_distance: Maximum distance for point correspondences
-        max_iterations: Maximum ICP iterations
-        fitness_threshold: Convergence threshold
+        source_points: Nx3 array of source points (to be transformed).
+            In ground-to-all strategy, this is ALL iPhone points.
+        target_points: Mx3 array of target points (reference).
+            In ground-to-all strategy, this is reference GROUND points only.
+        max_correspondence_distance: Maximum distance for point correspondences.
+            Points farther than this from any target point are ignored.
+            Typical value: 10 file units (e.g., 10 feet for NYS State Plane).
+        max_iterations: Maximum ICP iterations before stopping.
+        fitness_threshold: Convergence threshold for relative fitness change.
 
     Returns:
-        Tuple of (4x4 transformation matrix, alignment_info dict)
+        Tuple of (4x4 transformation matrix, alignment_info dict).
+        alignment_info contains:
+        - fitness: Fraction of source points with valid correspondences (0-1).
+          May be low (<0.3) in ground-to-all strategy due to non-ground points.
+        - inlier_rmse: RMS error of inlier correspondences.
+        - translation_xyz: Translation component [tx, ty, tz].
+        - rotation_angle_deg: Total rotation angle in degrees.
+        - correspondence_count: Number of valid point correspondences.
     """
     print(f"  Running ICP alignment...")
     print(f"    Source points: {len(source_points):,}")
@@ -288,17 +350,39 @@ def transfer_ground_classification(
     """
     Transfer ground classification from reference to iPhone points.
 
-    For each iPhone point, if there's a nearby reference ground point
-    within the specified tolerances, classify it as ground.
+    iPhone scans from Polycam don't include ground classification. This function
+    infers which iPhone points are ground by checking proximity to the reference
+    ground surface (which has professional classification from NYS).
+
+    Algorithm:
+        For each iPhone point (x, y, z):
+            1. Find all reference ground points within horizontal_tolerance of (x, y)
+            2. For those nearby points, check if any have |z_ref - z_iphone| <= vertical_tolerance
+            3. If yes, classify the iPhone point as ground (code 2)
+
+    This two-stage approach (horizontal then vertical) handles terrain slopes:
+    an iPhone point on a hillside should only be classified as ground if it's
+    vertically close to the reference ground at that horizontal location.
+
+    Why transfer classification?
+        - Enables consistent filtering (e.g., extract ground-only for DEMs)
+        - Allows downstream tools to distinguish ground from vegetation
+        - Preserves professional classification work from NYS data
 
     Args:
-        iphone_las: iPhone LAS data (will be modified)
-        reference_ground_points: Nx3 array of reference ground points
-        horizontal_tolerance: Max horizontal distance to consider (file units)
-        vertical_tolerance: Max vertical distance to consider (file units)
+        iphone_las: iPhone LAS data (will be modified). Should already be
+            aligned to the reference CRS via ICP.
+        reference_ground_points: Nx3 array of reference ground points.
+            Extract these using extract_ground_points(ref_las, classification=2).
+        horizontal_tolerance: Max horizontal (XY) distance to search for nearby
+            reference ground points. In file units (typically feet for NYS).
+            Default 1.0 = ~1 foot search radius.
+        vertical_tolerance: Max vertical (Z) distance to consider a point as
+            ground. In file units. Default 0.5 = ~6 inches vertical tolerance.
 
     Returns:
-        iPhone LAS data with updated classification
+        New LAS data with classification field updated. Points classified as
+        ground will have classification=2.
     """
     print("Transferring ground classification to iPhone points...")
 
@@ -387,14 +471,49 @@ def merge_with_replacement(
     """
     Merge two point clouds, replacing reference points in overlap region with iPhone points.
 
+    Strategy: REPLACEMENT, not blending
+    ------------------------------------
+    In the overlap region, iPhone data completely replaces NYS data rather than
+    being blended or merged. This approach:
+
+    1. Avoids double-density artifacts at boundaries
+    2. Provides clear data provenance (each point comes from one source)
+    3. Prioritizes higher-resolution iPhone data where available
+    4. Simplifies downstream processing
+
+    The overlap region is defined as a circle centered on the iPhone scan's
+    centroid with radius equal to the scan's maximum extent (plus 10% buffer).
+
+    Visualization:
+        ┌─────────────────────────────────────┐
+        │                                     │
+        │         NYS Data (kept)             │
+        │                                     │
+        │      ┌───────────────────┐          │
+        │      │                   │          │
+        │      │   iPhone Data     │          │
+        │      │   (replaces NYS)  │          │
+        │      │                   │          │
+        │      └───────────────────┘          │
+        │                                     │
+        │         NYS Data (kept)             │
+        │                                     │
+        └─────────────────────────────────────┘
+
     Args:
-        reference_las: Reference LAS data (NYS)
-        iphone_las: iPhone LAS data (higher resolution, takes priority)
-        replacement_radius: If provided, remove reference points within this radius
-                          of any iPhone point. If None, auto-calculate from iPhone extent.
+        reference_las: Reference LAS data (NYS). Lower resolution but covers
+            larger area. Points within the replacement region will be excluded.
+        iphone_las: iPhone LAS data (from Polycam). Higher resolution, takes
+            priority in the overlap region. Should be aligned via ICP first.
+        replacement_radius: If provided, defines the circular region around the
+            iPhone scan center where reference points are excluded. If None,
+            auto-calculated as 1.1 × (max distance from centroid to any iPhone point).
 
     Returns:
-        Merged LAS data
+        Merged LAS data with:
+        - Reference points outside the replacement region
+        - All iPhone points
+        - Attributes (RGB, classification, intensity) preserved from both sources
     """
     print("Merging point clouds with replacement...")
 

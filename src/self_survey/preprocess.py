@@ -1,15 +1,47 @@
 """
 Preprocess LiDAR data for property surveys.
 
-Commands:
-    ingest   - Merge NYS LiDAR tiles, drape orthoimagery, and clip to radius
-    register - Register iPhone LiDAR scan to NYS reference and merge
+This CLI provides two commands for creating high-resolution property surveys
+by combining NYS aerial LiDAR with iPhone LiDAR scans.
 
-Usage:
-    preprocess ingest tile1.laz tile2.laz --ortho ortho.tif \
-        --lat 42.4532 --lon -73.7891 --radius 100 -o output.laz
+Commands
+--------
 
-    preprocess register iphone_scan.laz --reference nys_data.laz -o merged.laz
+**ingest**: Prepare NYS reference data
+    - Merge multiple LiDAR tiles into one point cloud
+    - Drape RGB colors from orthoimagery onto points
+    - Clip to circular region around property center
+
+**register**: Register and merge iPhone scan
+    - Transform iPhone coordinates to NYS CRS
+    - Align using ICP on ground surfaces
+    - Transfer ground classification from NYS to iPhone points
+    - Merge with iPhone data replacing NYS in overlap region
+
+Typical Workflow
+----------------
+
+1. Download NYS LiDAR tiles and orthoimagery covering your property
+2. Run 'ingest' to create a clipped, colorized reference point cloud
+3. Capture iPhone LiDAR scan with Polycam (export as georeferenced LAS)
+4. Run 'register' to align and merge the iPhone scan
+
+Usage Examples
+--------------
+
+    # Step 1: Ingest NYS data
+    preprocess ingest tile1.laz tile2.laz \\
+        --ortho ortho.tif \\
+        --lat 42.4532 --lon -73.7891 \\
+        --radius 200 \\
+        -o nys_reference.laz
+
+    # Step 2: Register iPhone scan
+    preprocess register polycam_scan.laz \\
+        --reference nys_reference.laz \\
+        -o merged_survey.laz
+
+See README.md for detailed algorithmic documentation.
 """
 
 from pathlib import Path
@@ -353,12 +385,41 @@ def register(
     """
     Register an iPhone LiDAR scan to NYS reference data and merge.
 
-    The processing pipeline:
-    1. Load iPhone scan and reference data
-    2. Transform iPhone scan to reference CRS (if different)
-    3. Align using ICP (reference ground points → all iPhone points)
-    4. Transfer ground classification from reference to iPhone points
-    5. Merge, replacing reference points in overlap region with iPhone data
+    This command aligns a georeferenced iPhone LiDAR scan (from Polycam or similar)
+    to NYS reference data and produces a merged point cloud where iPhone data
+    replaces NYS data in the overlap region.
+
+    Pipeline Steps
+    --------------
+
+    1. **Load**: Read both point clouds, detect CRS from metadata
+    2. **Transform**: Convert iPhone coordinates to reference CRS (e.g., WGS84 → State Plane)
+    3. **ICP Alignment**: Fine-tune alignment using ground-to-all ICP strategy
+    4. **Classification Transfer**: Infer ground points in iPhone data from NYS ground surface
+    5. **Merge**: Combine clouds with iPhone replacing NYS in overlap region
+    6. **Save**: Write merged LAZ file
+
+    Ground-to-All ICP Strategy
+    --------------------------
+
+    Since Polycam doesn't classify ground points, we can't do ground-to-ground ICP.
+    Instead:
+
+    - Target: NYS GROUND points only (classification=2)
+    - Source: ALL iPhone points
+
+    ICP's max_correspondence_distance naturally filters non-ground iPhone points
+    (trees, vegetation) since they won't have nearby correspondences in the
+    ground-only target. This aligns the ground surfaces, which is the most
+    reliable common feature between aerial and iPhone LiDAR.
+
+    Low fitness scores (0.1-0.3) are expected because many iPhone points
+    (non-ground) won't have correspondences. Check translation values to
+    verify alignment is reasonable.
+
+    See Also
+    --------
+    register_iphone module for detailed algorithmic documentation.
     """
     from pyproj import CRS
 
