@@ -1,0 +1,413 @@
+# Self-Survey: LiDAR Property Survey Toolkit
+
+A toolkit for creating high-resolution digital surveys of property by combining New York State aerial LiDAR data with iPhone LiDAR scans.
+
+## Overview
+
+This project enables property owners to augment publicly available NYS LiDAR data (typically 2-4 points per square meter) with high-resolution iPhone LiDAR scans (hundreds of points per square meter) from apps like Polycam. The result is a merged point cloud where areas you've scanned with your iPhone have detailed resolution while the surrounding area uses the lower-resolution state data.
+
+## Installation
+
+```bash
+# Requires Python 3.12+
+pip install -e .
+```
+
+## Quick Start
+
+### 1. Ingest NYS LiDAR Data
+
+Download LiDAR tiles from the [NYS GIS Clearinghouse](https://gis.ny.gov/elevation/lidar-coverage) and orthoimagery, then process them:
+
+```bash
+preprocess ingest tile1.laz tile2.laz \
+    --ortho orthoimagery.tif \
+    --lat 42.4532 --lon -73.7891 \
+    --radius 200 \
+    -o nys_reference.laz
+```
+
+This will:
+- Merge multiple LiDAR tiles into one point cloud
+- Drape RGB colors from orthoimagery onto the points
+- Clip to a 200-meter radius around your property center
+
+### 2. Register iPhone Scan
+
+Export your Polycam scan as a georeferenced LAS file, then register it:
+
+```bash
+preprocess register polycam_scan.laz \
+    --reference nys_reference.laz \
+    -o merged_survey.laz
+```
+
+### 3. Generate Elevation Contours
+
+Generate elevation contour lines for CAD/architectural use:
+
+```bash
+# Standard 2-foot contours (matches typical survey standards)
+preprocess contour merged_survey.laz -o contours.dxf --interval 2
+
+# High-fidelity 0.5-foot contours (takes advantage of iPhone density)
+preprocess contour merged_survey.laz -o contours.dxf --interval 0.5
+```
+
+The output DXF can be opened in AutoCAD, SketchUp, Rhino, Revit, or any CAD software.
+
+### 4. Create 3D Gaussian Splat (Optional)
+
+For photorealistic visualization, create a 3D Gaussian Splat from your point cloud and photos:
+
+```bash
+# Take photos covering the area, then:
+preprocess splat merged_survey.laz --photos ./photos/ -o scene.ply
+
+# View in any 3DGS viewer (antimatter15, SuperSplat, etc.)
+```
+
+This requires COLMAP and optionally PyTorch + gsplat for training.
+
+## Commands
+
+### `preprocess ingest`
+
+Ingests and preprocesses NYS LiDAR data.
+
+```bash
+preprocess ingest <tiles...> \
+    --lat <latitude> --lon <longitude> \
+    --radius <meters> \
+    -o <output.laz> \
+    [--ortho <orthoimagery.tif>...] \
+    [--radius-units meters|feet|same] \
+    [--epsg <code>] \
+    [--filter-ground]
+```
+
+| Option | Description |
+|--------|-------------|
+| `tiles` | One or more LAS/LAZ files to merge |
+| `--lat`, `--lon` | Center point for clipping (WGS84) |
+| `--radius` | Clip radius (default: meters) |
+| `--ortho` | Orthoimagery TIFF(s) to drape colors from |
+| `--filter-ground` | Keep only ground-classified points |
+| `--epsg` | Manual CRS override if auto-detection fails |
+
+### `preprocess register`
+
+Registers an iPhone LiDAR scan to the NYS reference and merges them.
+
+```bash
+preprocess register <iphone_scan.laz> \
+    --reference <nys_reference.laz> \
+    -o <output.laz> \
+    [--icp-distance <float>] \
+    [--horizontal-tolerance <float>] \
+    [--vertical-tolerance <float>] \
+    [--replacement-radius <float>] \
+    [--skip-icp] \
+    [--no-transfer-classification]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--reference`, `-r` | NYS reference data (from `ingest`) |
+| `--icp-distance` | Max correspondence distance for ICP (default: 10.0) |
+| `--horizontal-tolerance` | Ground classification horizontal tolerance (default: 1.0) |
+| `--vertical-tolerance` | Ground classification vertical tolerance (default: 0.5) |
+| `--replacement-radius` | Override auto-detected replacement region |
+| `--skip-icp` | Skip alignment if already well-registered |
+| `--no-transfer-classification` | Skip ground classification transfer |
+
+### `preprocess contour`
+
+Generates elevation contour lines from ground-classified LiDAR data.
+
+```bash
+preprocess contour <input.laz> \
+    -o <output.dxf> \
+    [--interval <feet>] \
+    [--resolution <feet>] \
+    [--index-interval <n>] \
+    [--smoothing <passes>]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--interval`, `-i` | Elevation interval between contours (default: 2.0) |
+| `--resolution` | Grid cell size for DEM interpolation (default: 1.0) |
+| `--index-interval` | Every Nth contour is a major/index contour (default: 5) |
+| `--smoothing` | Gaussian smoothing passes on DEM (default: 1, 0=none) |
+| `--ground-class` | Classification code for ground (default: 2) |
+
+**Output formats**:
+- `.dxf` - AutoCAD DXF format (recommended for architects)
+- `.geojson` - GeoJSON format (for GIS/web workflows)
+
+**DXF layer organization**:
+- `CONTOUR_MAJOR` - Index contours (red, heavier lineweight)
+- `CONTOUR_MINOR` - Intermediate contours (green, lighter lineweight)
+
+### `preprocess splat`
+
+Creates a 3D Gaussian Splatting model for photorealistic visualization.
+
+```bash
+preprocess splat <input.laz> \
+    --photos <photo_dir> \
+    -o <output.ply> \
+    [--iterations <n>] \
+    [--subsample <n>] \
+    [--skip-training]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--photos`, `-p` | Directory containing input photos |
+| `--colmap-workspace` | Use existing COLMAP reconstruction |
+| `--iterations`, `-n` | Training iterations (default: 30000) |
+| `--subsample` | Limit LiDAR points for faster training |
+| `--skip-training` | Export initialization only (no training) |
+| `--icp-distance` | Max distance for COLMAP-LiDAR registration (default: 50.0) |
+| `--checkpoint-interval` | Save checkpoints every N iterations (default: 5000) |
+
+**Prerequisites**:
+- COLMAP must be installed (`brew install colmap` / `apt install colmap`)
+- For training: `pip install -e ".[splat]"` (installs PyTorch + gsplat)
+
+**Output**: Standard 3DGS PLY format, viewable in:
+- [antimatter15 viewer](https://antimatter15.com/splat/)
+- [SuperSplat](https://playcanvas.com/supersplat/editor)
+- Luma AI viewer
+
+## Algorithmic Details
+
+### Ground Classification Strategy
+
+NYS LiDAR data includes professional ground classification (classification code 2) that identifies which LiDAR returns hit the actual ground surface versus vegetation, buildings, etc. This classification is performed using sophisticated algorithms that analyze return patterns, intensity, and neighboring points.
+
+iPhone LiDAR scans from apps like Polycam typically do **not** include ground classification. To enable consistent processing, we transfer ground classification from the NYS reference data to the iPhone scan after alignment.
+
+### ICP Registration: Ground-to-All Strategy
+
+The registration uses a "ground-to-all" ICP (Iterative Closest Point) strategy:
+
+```
+Reference (NYS):  Ground points only (classification=2)
+         �
+        ICP
+         �
+iPhone (Polycam): ALL points
+```
+
+**Why this approach?**
+
+1. **Ground is the common feature**: In a woodland environment, the ground surface is the most reliable common feature between aerial LiDAR (which penetrates canopy) and iPhone scans (which capture ground where visible).
+
+2. **Natural filtering**: ICP uses a maximum correspondence distance (`--icp-distance`). iPhone points that are far from any ground point (trees, vegetation, structures) won't find correspondences and are effectively ignored during alignment.
+
+3. **Handles missing classification**: Since Polycam doesn't classify ground, we can't do ground-to-ground alignment. But ground-to-all works because the iPhone's ground points will find correspondences with NYS ground points.
+
+4. **Robust to vegetation**: iPhone scans in forests will have many vegetation points. These don't interfere with alignment because they have no nearby correspondences in the ground-only reference.
+
+**Expected ICP fitness scores**: Because many iPhone points (vegetation) won't have correspondences, fitness scores may be low (0.1-0.3). This is normal. Check the translation values to verify alignment is reasonable.
+
+### Ground Classification Transfer
+
+After ICP alignment, we infer which iPhone points are ground by proximity to the reference ground surface:
+
+```
+For each iPhone point (x, y, z):
+    1. Find reference ground points within horizontal_tolerance of (x, y)
+    2. If any have |z_ref - z_iphone| d vertical_tolerance:
+       � Classify as ground (code 2)
+```
+
+**Default tolerances** (in file units, typically feet for NYS data):
+- `horizontal_tolerance = 1.0` (~1 foot horizontal search radius)
+- `vertical_tolerance = 0.5` (~6 inches vertical tolerance)
+
+**Why transfer classification?**
+- Enables consistent filtering (e.g., extract ground-only for terrain analysis)
+- Allows downstream tools to distinguish ground from vegetation
+- Preserves the professional classification work done on NYS data
+
+### Merge Strategy: Replacement in Overlap
+
+When merging, iPhone data **replaces** NYS data in the overlap region:
+
+```
+                                     
+                                     
+         NYS Data (kept)             
+                                     
+                                   
+                                   
+         iPhone Data               
+         (replaces NYS)            
+                                   
+                                   
+                                     
+         NYS Data (kept)             
+                                     
+                                     
+```
+
+The replacement region is determined by the iPhone scan's extent (auto-calculated) or can be manually specified with `--replacement-radius`.
+
+**Why replacement instead of blending?**
+- iPhone data is higher resolution and more recent
+- Avoids double-density artifacts at boundaries
+- Simpler to reason about data provenance
+
+### Contour Generation
+
+The `contour` command generates elevation contours from ground points using a three-stage process:
+
+**1. DEM Interpolation**
+
+Ground points are interpolated to a regular grid using scipy's `griddata` with linear interpolation:
+
+```
+Irregular ground points    Linear interpolation    Regular DEM grid
+        .  .                                       [z z z z z z]
+      .    .  .               ------>              [z z z z z z]
+        .      .                                   [z z z z z z]
+      .    .                                       [z z z z z z]
+```
+
+Linear interpolation is preferred over cubic because:
+- More robust to noise in LiDAR data
+- Avoids overshooting between sparse points
+- Faster computation for large point clouds
+
+**2. Optional Smoothing**
+
+A light Gaussian smoothing (default: 1 pass, sigma=1.0) reduces noise in the DEM before contouring. This produces cleaner contour lines without losing significant detail. Set `--smoothing 0` to disable.
+
+**3. Contour Extraction**
+
+Matplotlib's marching squares algorithm extracts isolines at each elevation level. The algorithm:
+- Walks the grid finding cells that cross each elevation
+- Interpolates the exact crossing point within each cell
+- Connects crossings into continuous polylines
+
+**Resolution vs. Detail Tradeoff**
+
+The `--resolution` parameter controls DEM cell size:
+- **1.0 ft** (default): Good balance for property surveys
+- **0.5 ft**: Finer detail, recommended for iPhone-augmented data
+- **2.0 ft**: Faster processing, adequate for larger areas
+
+**Choosing Contour Interval**
+
+| Interval | Use Case |
+|----------|----------|
+| 2 ft | Standard survey contours, matches typical existing surveys |
+| 1 ft | Detailed terrain analysis |
+| 0.5 ft | High-fidelity contours, best with iPhone-augmented data |
+
+With iPhone LiDAR augmentation, you can reasonably use finer intervals (0.5-1 ft) in scanned areas because the point density supports the additional detail.
+
+### 3D Gaussian Splatting
+
+The `splat` command creates photorealistic 3D visualizations using 3D Gaussian Splatting (3DGS). The pipeline:
+
+**1. COLMAP Reconstruction**
+
+Photos are processed with COLMAP (Structure from Motion) to estimate camera poses:
+- Feature extraction and matching
+- Sparse 3D reconstruction
+- Camera intrinsics and extrinsics
+
+**2. Coordinate Registration**
+
+COLMAP's reconstruction is aligned to the LiDAR coordinate system via ICP:
+
+```
+COLMAP sparse points ──► ICP ◄── LiDAR points
+                          │
+                          ▼
+                    4x4 Transform
+                          │
+                          ▼
+              Camera poses in LiDAR coords
+```
+
+This correlation allows us to use LiDAR points as Gaussian initialization while training with the photo-derived camera poses.
+
+**3. LiDAR-Initialized Gaussians**
+
+Instead of initializing from COLMAP's sparse points (thousands), we use LiDAR (millions):
+- More accurate starting geometry
+- Faster convergence during training
+- Fewer "floater" artifacts
+- Better coverage in texture-poor regions
+
+**4. Differentiable Training**
+
+The model is trained by:
+- Rendering Gaussians to match camera views
+- Computing L1 + SSIM loss against ground truth photos
+- Backpropagating to optimize Gaussian parameters
+- Periodic densification/pruning
+
+Training typically takes 30,000 iterations (~30 minutes on GPU).
+
+## Coordinate Reference Systems
+
+NYS LiDAR data typically uses State Plane coordinate systems:
+
+| Region | EPSG | Units |
+|--------|------|-------|
+| NY State Plane East | 2261 | US Survey Feet |
+| NY State Plane Central | 2262 | US Survey Feet |
+| NY State Plane West | 2263 | US Survey Feet |
+| UTM Zone 18N | 32618 | Meters |
+
+Polycam exports are typically in WGS84 (EPSG:4326). The `register` command automatically transforms iPhone coordinates to match the reference CRS.
+
+## Data Sources
+
+### NYS LiDAR
+- [NYS GIS Clearinghouse - LiDAR Coverage](https://gis.ny.gov/elevation/lidar-coverage)
+- Typical density: 2-4 points/m�
+- Includes ground classification
+
+### NYS Orthoimagery
+- [NYS GIS Clearinghouse - Orthoimagery](https://gis.ny.gov/orthoimagery)
+- High-resolution aerial photography
+- Used to colorize LiDAR points
+
+### iPhone LiDAR (Polycam)
+- Export as LAS with geolocation enabled
+- Typical density: 100+ points/m�
+- No ground classification (transferred from NYS)
+
+## Troubleshooting
+
+### "Could not detect CRS from file"
+Specify the EPSG code manually:
+```bash
+preprocess ingest ... --epsg 2261  # NY State Plane East
+```
+
+### Low ICP fitness score
+This is expected when the iPhone scan has many non-ground points. Verify alignment by checking:
+- Translation values (should be small, ~meters, for GPS correction)
+- Rotation (should be minimal, <1� typically)
+
+### Poor alignment
+- Increase `--icp-distance` to allow larger correspondence search
+- Verify iPhone scan is georeferenced (check Polycam export settings)
+- Ensure scans have overlapping ground coverage
+
+### Classification transfer finds no ground points
+- Increase `--horizontal-tolerance` and `--vertical-tolerance`
+- Verify reference data has ground classification (`--filter-ground` should work)
+
+## License
+
+[Add license information]
