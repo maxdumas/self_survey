@@ -252,12 +252,6 @@ def export_to_dxf(
         "elevation_max": float("-inf"),
     }
 
-    # Determine which elevations are major contours
-    if contours:
-        base_elev = contours[0][0]
-        contour_interval = contours[1][0] - contours[0][0] if len(contours) > 1 else 1.0
-        major_interval = abs(contour_interval * index_interval)
-
     for i, (elevation, polylines) in enumerate(contours):
         # Determine if this is a major (index) contour
         is_major = (i % index_interval) == 0 if index_interval > 0 else False

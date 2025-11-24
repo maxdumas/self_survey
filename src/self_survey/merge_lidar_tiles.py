@@ -5,10 +5,11 @@ This module provides functions for loading, merging, and saving LiDAR
 point clouds while preserving metadata like classification and intensity.
 """
 
-import numpy as np
-import laspy
-import open3d as o3d
 from pathlib import Path
+
+import laspy
+import numpy as np
+import open3d as o3d
 
 __all__ = [
     "load_las_to_open3d",

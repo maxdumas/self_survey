@@ -44,8 +44,8 @@ iPhone data REPLACES (not blends with) NYS data in the overlap region.
 This avoids double-density artifacts and provides clear data provenance.
 """
 
-import numpy as np
 import laspy
+import numpy as np
 import open3d as o3d
 from pyproj import CRS, Transformer
 
@@ -140,13 +140,15 @@ def load_and_transform_to_crs(
     if hasattr(las, "number_of_returns"):
         new_las.number_of_returns = las.number_of_returns
 
-    offset = np.array([
-        np.mean(x_new) - np.mean(x_orig),
-        np.mean(y_new) - np.mean(y_orig),
-        0.0,
-    ])
+    offset = np.array(
+        [
+            np.mean(x_new) - np.mean(x_orig),
+            np.mean(y_new) - np.mean(y_orig),
+            0.0,
+        ]
+    )
 
-    print(f"  Transformation complete")
+    print("  Transformation complete")
     print(f"  New bounds X: [{x_new.min():.2f}, {x_new.max():.2f}]")
     print(f"  New bounds Y: [{y_new.min():.2f}, {y_new.max():.2f}]")
 
@@ -171,7 +173,9 @@ def extract_ground_points(
     points = np.vstack((las.x, las.y, las.z)).T
 
     ground_points = points[mask]
-    print(f"  Ground points: {len(ground_points):,} / {len(points):,} ({100*len(ground_points)/len(points):.1f}%)")
+    print(
+        f"  Ground points: {len(ground_points):,} / {len(points):,} ({100 * len(ground_points) / len(points):.1f}%)"
+    )
 
     return ground_points, mask
 
@@ -221,7 +225,7 @@ def icp_align(
         - rotation_angle_deg: Total rotation angle in degrees.
         - correspondence_count: Number of valid point correspondences.
     """
-    print(f"  Running ICP alignment...")
+    print("  Running ICP alignment...")
     print(f"    Source points: {len(source_points):,}")
     print(f"    Target points: {len(target_points):,}")
     print(f"    Max correspondence distance: {max_correspondence_distance}")
@@ -276,10 +280,12 @@ def icp_align(
         "correspondence_count": len(result.correspondence_set),
     }
 
-    print(f"    ICP Results:")
+    print("    ICP Results:")
     print(f"      Fitness: {result.fitness:.4f} (1.0 = perfect)")
     print(f"      Inlier RMSE: {result.inlier_rmse:.4f}")
-    print(f"      Translation: [{translation[0]:.3f}, {translation[1]:.3f}, {translation[2]:.3f}]")
+    print(
+        f"      Translation: [{translation[0]:.3f}, {translation[1]:.3f}, {translation[2]:.3f}]"
+    )
     print(f"      Rotation: {rotation_angle_deg:.3f}°")
     print(f"      Correspondences: {len(result.correspondence_set):,}")
 
@@ -431,7 +437,9 @@ def transfer_ground_classification(
     new_classification[ground_mask] = 2  # Ground classification
 
     ground_count = np.sum(ground_mask)
-    print(f"  Points classified as ground: {ground_count:,} ({100*ground_count/len(iphone_points):.1f}%)")
+    print(
+        f"  Points classified as ground: {ground_count:,} ({100 * ground_count / len(iphone_points):.1f}%)"
+    )
 
     # Create new LAS with updated classification
     new_header = laspy.LasHeader(
@@ -556,8 +564,7 @@ def merge_with_replacement(
 
     # Create new header
     new_header = laspy.LasHeader(
-        point_format=reference_las.header.point_format,
-        version="1.4"
+        point_format=reference_las.header.point_format, version="1.4"
     )
     new_header.scales = reference_las.header.scales
     new_header.offsets = [np.min(merged_x), np.min(merged_y), np.min(merged_z)]
@@ -577,38 +584,43 @@ def merge_with_replacement(
 
     ref_classification = np.array(reference_las.classification)[keep_mask]
     iphone_classification = np.array(iphone_las.classification)
-    merged_las.classification = np.concatenate([ref_classification, iphone_classification])
+    merged_las.classification = np.concatenate(
+        [ref_classification, iphone_classification]
+    )
 
     # Merge RGB if both have it
     ref_has_rgb = hasattr(reference_las, "red")
     iphone_has_rgb = hasattr(iphone_las, "red")
 
     if ref_has_rgb and iphone_has_rgb:
-        merged_las.red = np.concatenate([
-            np.array(reference_las.red)[keep_mask],
-            np.array(iphone_las.red)
-        ])
-        merged_las.green = np.concatenate([
-            np.array(reference_las.green)[keep_mask],
-            np.array(iphone_las.green)
-        ])
-        merged_las.blue = np.concatenate([
-            np.array(reference_las.blue)[keep_mask],
-            np.array(iphone_las.blue)
-        ])
+        merged_las.red = np.concatenate(
+            [np.array(reference_las.red)[keep_mask], np.array(iphone_las.red)]
+        )
+        merged_las.green = np.concatenate(
+            [np.array(reference_las.green)[keep_mask], np.array(iphone_las.green)]
+        )
+        merged_las.blue = np.concatenate(
+            [np.array(reference_las.blue)[keep_mask], np.array(iphone_las.blue)]
+        )
     elif ref_has_rgb:
         # Reference has RGB, iPhone doesn't - fill with white
-        merged_las.red = np.concatenate([
-            np.array(reference_las.red)[keep_mask],
-            np.full(len(iphone_points), 65535, dtype=np.uint16)
-        ])
-        merged_las.green = np.concatenate([
-            np.array(reference_las.green)[keep_mask],
-            np.full(len(iphone_points), 65535, dtype=np.uint16)
-        ])
-        merged_las.blue = np.concatenate([
-            np.array(reference_las.blue)[keep_mask],
-            np.full(len(iphone_points), 65535, dtype=np.uint16)
-        ])
+        merged_las.red = np.concatenate(
+            [
+                np.array(reference_las.red)[keep_mask],
+                np.full(len(iphone_points), 65535, dtype=np.uint16),
+            ]
+        )
+        merged_las.green = np.concatenate(
+            [
+                np.array(reference_las.green)[keep_mask],
+                np.full(len(iphone_points), 65535, dtype=np.uint16),
+            ]
+        )
+        merged_las.blue = np.concatenate(
+            [
+                np.array(reference_las.blue)[keep_mask],
+                np.full(len(iphone_points), 65535, dtype=np.uint16),
+            ]
+        )
 
     return merged_las

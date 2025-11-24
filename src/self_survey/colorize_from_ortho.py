@@ -5,8 +5,8 @@ This module provides functions to drape RGB colors from orthoimagery
 onto LiDAR point clouds by sampling pixel values at each point location.
 """
 
-import numpy as np
 import laspy
+import numpy as np
 import open3d as o3d
 import rasterio
 
@@ -54,11 +54,13 @@ def colorize_point_cloud(
         blue = rgb[2, rows, cols]
 
     # Normalize to 0-1 range for Open3D (assuming 8-bit ortho)
-    colors = np.column_stack([
-        red.astype(np.float64) / 255.0,
-        green.astype(np.float64) / 255.0,
-        blue.astype(np.float64) / 255.0,
-    ])
+    colors = np.column_stack(
+        [
+            red.astype(np.float64) / 255.0,
+            green.astype(np.float64) / 255.0,
+            blue.astype(np.float64) / 255.0,
+        ]
+    )
 
     pcd.colors = o3d.utility.Vector3dVector(colors)
     print(f"  Colorized {len(points):,} points")

@@ -81,16 +81,16 @@ def ingest(
     import open3d as o3d
     from pyproj import CRS
 
+    from self_survey.clip_to_radius import (
+        clip_to_radius,
+        get_crs_from_las,
+        transform_latlon_to_crs,
+    )
+    from self_survey.colorize_from_ortho import colorize_point_cloud
     from self_survey.merge_lidar_tiles import (
         load_las_to_open3d,
         merge_point_clouds,
         save_as_laz,
-    )
-    from self_survey.colorize_from_ortho import colorize_point_cloud
-    from self_survey.clip_to_radius import (
-        get_crs_from_las,
-        transform_latlon_to_crs,
-        clip_to_radius,
     )
 
     # Validate inputs
@@ -116,7 +116,7 @@ def ingest(
     merged_pcd = None
     merged_meta = None
 
-    for i, tile in enumerate(tiles):
+    for tile in tiles:
         pcd, meta = load_las_to_open3d(str(tile))
 
         if merged_pcd is None:
@@ -207,7 +207,7 @@ def ingest(
 
     # Transform center point to file CRS
     center_x, center_y = transform_latlon_to_crs(lat, lon, crs)
-    print(f"\nCenter point:")
+    print("\nCenter point:")
     print(f"  WGS84: ({lat}, {lon})")
     print(f"  File CRS: ({center_x:.2f}, {center_y:.2f})")
 
@@ -227,7 +227,7 @@ def ingest(
     # Check if center point is within data bounds
     x_min, x_max = las.x.min(), las.x.max()
     y_min, y_max = las.y.min(), las.y.max()
-    print(f"\nData bounds:")
+    print("\nData bounds:")
     print(f"  X: [{x_min:.2f}, {x_max:.2f}]")
     print(f"  Y: [{y_min:.2f}, {y_max:.2f}]")
 

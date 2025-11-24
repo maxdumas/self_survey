@@ -128,49 +128,52 @@ def splat(
     - SuperSplat (https://playcanvas.com/supersplat/editor)
     - Luma AI viewer
     """
-    import numpy as np
     import laspy
+    import numpy as np
 
     from self_survey.gaussian_splatting import (
         check_colmap_installed,
-        run_colmap,
-        parse_colmap_text,
-        register_colmap_to_lidar,
-        transform_cameras,
-        initialize_from_lidar,
-        train_gaussians,
         export_gaussians_ply,
         export_initialization_ply,
         get_training_device,
+        initialize_from_lidar,
+        parse_colmap_text,
+        register_colmap_to_lidar,
+        run_colmap,
+        train_gaussians,
+        transform_cameras,
     )
 
     # Validate inputs
     if not input_file.exists():
         raise cyclopts.ValidationError(f"Input file not found: {input_file}")
 
-    if not skip_training:
-        if photos is None and colmap_workspace is None:
-            raise cyclopts.ValidationError(
-                "Either --photos or --colmap-workspace is required for training.\n"
-                "Use --skip-training to export initialization without training."
-            )
+    if not skip_training and photos is None and colmap_workspace is None:
+        raise cyclopts.ValidationError(
+            "Either --photos or --colmap-workspace is required for training.\n"
+            "Use --skip-training to export initialization without training."
+        )
 
     if photos is not None and not photos.exists():
         raise cyclopts.ValidationError(f"Photos directory not found: {photos}")
 
     if colmap_workspace is not None and not colmap_workspace.exists():
-        raise cyclopts.ValidationError(f"COLMAP workspace not found: {colmap_workspace}")
+        raise cyclopts.ValidationError(
+            f"COLMAP workspace not found: {colmap_workspace}"
+        )
 
     # Check dependencies
-    if not skip_training or (photos is not None and colmap_workspace is None):
-        if not check_colmap_installed():
-            raise cyclopts.ValidationError(
-                "COLMAP is not installed. Please install it:\n"
-                "  macOS: brew install colmap\n"
-                "  Ubuntu: sudo apt install colmap\n"
-                "  Windows: Download from https://colmap.github.io/\n"
-                "\nOr use --skip-training to export without camera poses."
-            )
+    needs_colmap = not skip_training or (
+        photos is not None and colmap_workspace is None
+    )
+    if needs_colmap and not check_colmap_installed():
+        raise cyclopts.ValidationError(
+            "COLMAP is not installed. Please install it:\n"
+            "  macOS: brew install colmap\n"
+            "  Ubuntu: sudo apt install colmap\n"
+            "  Windows: Download from https://colmap.github.io/\n"
+            "\nOr use --skip-training to export without camera poses."
+        )
 
     # Step 1: Load LiDAR data
     print("=" * 60)
@@ -199,8 +202,12 @@ def splat(
         workspace_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"\nProcessing photos from {photos}...")
-        photo_count = len(list(photos.glob("*.jpg")) + list(photos.glob("*.JPG")) +
-                         list(photos.glob("*.png")) + list(photos.glob("*.PNG")))
+        photo_count = len(
+            list(photos.glob("*.jpg"))
+            + list(photos.glob("*.JPG"))
+            + list(photos.glob("*.png"))
+            + list(photos.glob("*.PNG"))
+        )
         print(f"  Found {photo_count} images")
 
         reconstruction = run_colmap(photos, workspace_dir, use_gpu=use_gpu)
@@ -219,17 +226,30 @@ def splat(
         text_dir = colmap_workspace / "sparse_text"
         if not text_dir.exists():
             # Try to find and convert binary format
-            sparse_dirs = list((colmap_workspace / "sparse").iterdir()) if (colmap_workspace / "sparse").exists() else []
+            sparse_dirs = (
+                list((colmap_workspace / "sparse").iterdir())
+                if (colmap_workspace / "sparse").exists()
+                else []
+            )
             if sparse_dirs:
                 import subprocess
+
                 text_dir = colmap_workspace / "sparse_text"
                 text_dir.mkdir(exist_ok=True)
-                subprocess.run([
-                    "colmap", "model_converter",
-                    "--input_path", str(sparse_dirs[0]),
-                    "--output_path", str(text_dir),
-                    "--output_type", "TXT",
-                ], check=True, capture_output=True)
+                subprocess.run(
+                    [
+                        "colmap",
+                        "model_converter",
+                        "--input_path",
+                        str(sparse_dirs[0]),
+                        "--output_path",
+                        str(text_dir),
+                        "--output_type",
+                        "TXT",
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
 
         if not text_dir.exists():
             raise cyclopts.ValidationError(
@@ -268,7 +288,9 @@ def splat(
 
         # Report transformation
         translation = transform[:3, 3]
-        print(f"  Translation: [{translation[0]:.2f}, {translation[1]:.2f}, {translation[2]:.2f}]")
+        print(
+            f"  Translation: [{translation[0]:.2f}, {translation[1]:.2f}, {translation[2]:.2f}]"
+        )
     else:
         print("\n" + "=" * 60)
         print("STEP 3: Skipping registration (no COLMAP data)")
@@ -293,11 +315,19 @@ def splat(
         print("=" * 60)
 
         # Check training dependencies
-        try:
-            import torch
-            import gsplat
-        except ImportError as e:
-            print(f"\n  Warning: Training dependencies not available: {e}")
+        import importlib.util
+
+        gsplat_spec = importlib.util.find_spec("gsplat")
+        torch_spec = importlib.util.find_spec("torch")
+        if gsplat_spec is None or torch_spec is None:
+            missing = []
+            if torch_spec is None:
+                missing.append("torch")
+            if gsplat_spec is None:
+                missing.append("gsplat")
+            print(
+                f"\n  Warning: Training dependencies not available: {', '.join(missing)}"
+            )
             print("  Install with: pip install torch gsplat")
             print("  Exporting initialization instead...")
             skip_training = True

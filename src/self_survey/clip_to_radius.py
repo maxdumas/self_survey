@@ -5,8 +5,8 @@ This module provides functions for coordinate transformation and
 spatial clipping of LiDAR point clouds.
 """
 
-import numpy as np
 import laspy
+import numpy as np
 from pyproj import CRS, Transformer
 
 __all__ = ["get_crs_from_las", "transform_latlon_to_crs", "clip_to_radius"]
@@ -94,9 +94,7 @@ def clip_to_radius(
     original_count = len(points)
 
     # Calculate distances from center
-    distances = np.sqrt(
-        (points[:, 0] - center_x) ** 2 + (points[:, 1] - center_y) ** 2
-    )
+    distances = np.sqrt((points[:, 0] - center_x) ** 2 + (points[:, 1] - center_y) ** 2)
 
     # Create mask for points within radius
     mask = distances <= radius

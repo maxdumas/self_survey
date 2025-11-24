@@ -24,6 +24,10 @@ splat = [
     "gsplat>=1.0.0",
     "torchvision>=0.15.0",
 ]
+# Development dependencies
+dev = [
+    "ruff>=0.8.0",
+]
 
 [project.scripts]
 preprocess = "self_survey.cli:main"
@@ -34,3 +38,36 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function calls in argument defaults
+    "B905",   # zip without strict= (Python 3.10+)
+    "ARG001", # unused function argument (common in CLI callbacks)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["self_survey"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

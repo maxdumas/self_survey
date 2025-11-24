@@ -122,12 +122,12 @@ def register(
     """
     from self_survey.clip_to_radius import get_crs_from_las
     from self_survey.register_iphone import (
-        load_and_transform_to_crs,
+        apply_transform_to_las,
         extract_ground_points,
         icp_align,
-        apply_transform_to_las,
-        transfer_ground_classification,
+        load_and_transform_to_crs,
         merge_with_replacement,
+        transfer_ground_classification,
     )
 
     # Validate inputs
@@ -190,9 +190,7 @@ def register(
 
         # Use ALL iPhone points as source
         print("\nUsing all iPhone points for alignment...")
-        iphone_all_points = np.vstack(
-            (iphone_las.x, iphone_las.y, iphone_las.z)
-        ).T
+        iphone_all_points = np.vstack((iphone_las.x, iphone_las.y, iphone_las.z)).T
         print(f"  iPhone points: {len(iphone_all_points):,}")
 
         # Run ICP: iPhone all points -> Reference ground points
@@ -210,7 +208,9 @@ def register(
         if icp_info["fitness"] < 0.1:
             print("\n  WARNING: Low ICP fitness score.")
             print("  This is expected if the iPhone scan has many non-ground points.")
-            print("  Check the translation values to verify alignment looks reasonable.")
+            print(
+                "  Check the translation values to verify alignment looks reasonable."
+            )
 
         # Apply transformation to iPhone scan
         print("\nApplying transformation to iPhone scan...")

@@ -32,6 +32,7 @@ from typing import Annotated
 
 import cyclopts
 import laspy
+import numpy as np
 
 
 def contour(
@@ -104,11 +105,11 @@ def contour(
     from scipy.ndimage import gaussian_filter
 
     from self_survey.contour_generation import (
-        extract_ground_points,
         create_dem,
-        generate_contours,
         export_to_dxf,
         export_to_shapefile,
+        extract_ground_points,
+        generate_contours,
     )
 
     # Validate inputs
@@ -163,7 +164,6 @@ def contour(
     # Optional smoothing
     if smoothing > 0:
         print(f"\nApplying Gaussian smoothing ({smoothing} pass(es))...")
-        import numpy as np
 
         # Replace NaN with local mean for smoothing, then restore NaN
         nan_mask = np.isnan(grid_z)
@@ -211,7 +211,9 @@ def contour(
         print(f"  Total contour levels: {stats['total_contours']}")
         print(f"  Total polylines: {stats['total_polylines']:,}")
 
-    print(f"  Elevation range: {stats['elevation_min']:.2f} to {stats['elevation_max']:.2f}")
+    print(
+        f"  Elevation range: {stats['elevation_min']:.2f} to {stats['elevation_max']:.2f}"
+    )
 
     file_size = output.stat().st_size / 1024
     print(f"  File size: {file_size:.1f} KB")
@@ -222,7 +224,3 @@ def contour(
     print(f"\nOutput: {output}")
     print(f"Contour interval: {interval}")
     print(f"Total contour lines: {total_polylines:,}")
-
-
-# Import numpy at module level for use in command
-import numpy as np

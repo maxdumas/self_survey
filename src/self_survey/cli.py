@@ -25,9 +25,9 @@ See README.md for detailed documentation.
 
 import cyclopts
 
+from self_survey.commands.contour import contour
 from self_survey.commands.ingest import ingest
 from self_survey.commands.register import register
-from self_survey.commands.contour import contour
 from self_survey.commands.splat import splat
 
 app = cyclopts.App(

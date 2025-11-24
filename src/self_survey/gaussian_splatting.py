@@ -49,13 +49,11 @@ The gsplat library handles device-specific rasterization.
 
 from __future__ import annotations
 
-import json
 import shutil
 import struct
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -80,11 +78,13 @@ class Camera:
     @property
     def intrinsic_matrix(self) -> NDArray[np.float64]:
         """3x3 camera intrinsic matrix."""
-        return np.array([
-            [self.fx, 0, self.cx],
-            [0, self.fy, self.cy],
-            [0, 0, 1],
-        ])
+        return np.array(
+            [
+                [self.fx, 0, self.cx],
+                [0, self.fy, self.cy],
+                [0, 0, 1],
+            ]
+        )
 
     @property
     def rotation_matrix(self) -> NDArray[np.float64]:
@@ -210,12 +210,18 @@ def run_colmap(
     print("\n  Running feature extraction...")
     subprocess.run(
         [
-            "colmap", "feature_extractor",
-            "--database_path", str(database_path),
-            "--image_path", str(image_dir),
-            "--ImageReader.camera_model", camera_model,
-            "--ImageReader.single_camera", "1",
-            "--SiftExtraction.use_gpu", gpu_flag,
+            "colmap",
+            "feature_extractor",
+            "--database_path",
+            str(database_path),
+            "--image_path",
+            str(image_dir),
+            "--ImageReader.camera_model",
+            camera_model,
+            "--ImageReader.single_camera",
+            "1",
+            "--SiftExtraction.use_gpu",
+            gpu_flag,
         ],
         check=True,
         capture_output=True,
@@ -225,9 +231,12 @@ def run_colmap(
     print("  Running feature matching...")
     subprocess.run(
         [
-            "colmap", "exhaustive_matcher",
-            "--database_path", str(database_path),
-            "--SiftMatching.use_gpu", gpu_flag,
+            "colmap",
+            "exhaustive_matcher",
+            "--database_path",
+            str(database_path),
+            "--SiftMatching.use_gpu",
+            gpu_flag,
         ],
         check=True,
         capture_output=True,
@@ -237,10 +246,14 @@ def run_colmap(
     print("  Running sparse reconstruction...")
     subprocess.run(
         [
-            "colmap", "mapper",
-            "--database_path", str(database_path),
-            "--image_path", str(image_dir),
-            "--output_path", str(sparse_dir),
+            "colmap",
+            "mapper",
+            "--database_path",
+            str(database_path),
+            "--image_path",
+            str(image_dir),
+            "--output_path",
+            str(sparse_dir),
         ],
         check=True,
         capture_output=True,
@@ -259,10 +272,14 @@ def run_colmap(
 
     subprocess.run(
         [
-            "colmap", "model_converter",
-            "--input_path", str(recon_dir),
-            "--output_path", str(text_dir),
-            "--output_type", "TXT",
+            "colmap",
+            "model_converter",
+            "--input_path",
+            str(recon_dir),
+            "--output_path",
+            str(text_dir),
+            "--output_type",
+            "TXT",
         ],
         check=True,
         capture_output=True,
@@ -326,7 +343,7 @@ def parse_colmap_text(
     # Parse images.txt (extrinsics)
     cameras = []
     with open(images_file) as f:
-        lines = [l for l in f if not l.startswith("#")]
+        lines = [line for line in f if not line.startswith("#")]
 
     # images.txt has pairs of lines: image info, then 2D points
     for i in range(0, len(lines), 2):
@@ -344,18 +361,20 @@ def parse_colmap_text(
 
         intrinsics = camera_intrinsics.get(cam_id, camera_intrinsics[1])
 
-        cameras.append(Camera(
-            id=image_id,
-            width=intrinsics["width"],
-            height=intrinsics["height"],
-            fx=intrinsics["fx"],
-            fy=intrinsics["fy"],
-            cx=intrinsics["cx"],
-            cy=intrinsics["cy"],
-            qvec=qvec,
-            tvec=tvec,
-            image_path=image_dir / image_name,
-        ))
+        cameras.append(
+            Camera(
+                id=image_id,
+                width=intrinsics["width"],
+                height=intrinsics["height"],
+                fx=intrinsics["fx"],
+                fy=intrinsics["fy"],
+                cx=intrinsics["cx"],
+                cy=intrinsics["cy"],
+                qvec=qvec,
+                tvec=tvec,
+                image_path=image_dir / image_name,
+            )
+        )
 
     # Parse points3D.txt
     points = []
@@ -431,9 +450,7 @@ def register_colmap_to_lidar(
         max_correspondence_distance,
         initial_transform,
         o3d.pipelines.registration.TransformationEstimationPointToPlane(),
-        o3d.pipelines.registration.ICPConvergenceCriteria(
-            max_iteration=max_iterations
-        ),
+        o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=max_iterations),
     )
 
     print(f"  ICP fitness: {result.fitness:.4f}")
@@ -485,18 +502,20 @@ def transform_cameras(
         # Convert rotation back to quaternion
         new_qvec = rotmat_to_qvec(new_R)
 
-        transformed.append(Camera(
-            id=cam.id,
-            width=cam.width,
-            height=cam.height,
-            fx=cam.fx,
-            fy=cam.fy,
-            cx=cam.cx,
-            cy=cam.cy,
-            qvec=new_qvec,
-            tvec=new_tvec,
-            image_path=cam.image_path,
-        ))
+        transformed.append(
+            Camera(
+                id=cam.id,
+                width=cam.width,
+                height=cam.height,
+                fx=cam.fx,
+                fy=cam.fy,
+                cx=cam.cx,
+                cy=cam.cy,
+                qvec=new_qvec,
+                tvec=new_tvec,
+                image_path=cam.image_path,
+            )
+        )
 
     return transformed
 
@@ -504,11 +523,13 @@ def transform_cameras(
 def qvec_to_rotmat(qvec: NDArray[np.float64]) -> NDArray[np.float64]:
     """Convert quaternion (w, x, y, z) to 3x3 rotation matrix."""
     w, x, y, z = qvec
-    return np.array([
-        [1 - 2*y*y - 2*z*z, 2*x*y - 2*z*w, 2*x*z + 2*y*w],
-        [2*x*y + 2*z*w, 1 - 2*x*x - 2*z*z, 2*y*z - 2*x*w],
-        [2*x*z - 2*y*w, 2*y*z + 2*x*w, 1 - 2*x*x - 2*y*y],
-    ])
+    return np.array(
+        [
+            [1 - 2 * y * y - 2 * z * z, 2 * x * y - 2 * z * w, 2 * x * z + 2 * y * w],
+            [2 * x * y + 2 * z * w, 1 - 2 * x * x - 2 * z * z, 2 * y * z - 2 * x * w],
+            [2 * x * z - 2 * y * w, 2 * y * z + 2 * x * w, 1 - 2 * x * x - 2 * y * y],
+        ]
+    )
 
 
 def rotmat_to_qvec(R: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -567,14 +588,16 @@ def initialize_from_lidar(
 
     # Get colors if available
     colors = None
-    if hasattr(las, 'red') and hasattr(las, 'green') and hasattr(las, 'blue'):
+    if hasattr(las, "red") and hasattr(las, "green") and hasattr(las, "blue"):
         # LAS stores colors as 16-bit, normalize to [0, 1]
         max_val = 65535 if las.red.max() > 255 else 255
-        colors = np.vstack((
-            las.red / max_val,
-            las.green / max_val,
-            las.blue / max_val,
-        )).T
+        colors = np.vstack(
+            (
+                las.red / max_val,
+                las.green / max_val,
+                las.blue / max_val,
+            )
+        ).T
 
     # Subsample if requested
     if subsample is not None and len(points) > subsample:
@@ -585,8 +608,9 @@ def initialize_from_lidar(
 
     # Estimate initial scale from point density
     from scipy.spatial import cKDTree
-    tree = cKDTree(points[:min(10000, len(points))])
-    distances, _ = tree.query(points[:min(1000, len(points))], k=4)
+
+    tree = cKDTree(points[: min(10000, len(points))])
+    distances, _ = tree.query(points[: min(1000, len(points))], k=4)
     mean_nn_dist = np.mean(distances[:, 1:])  # Exclude self
     initial_scale = mean_nn_dist * 0.5
 
@@ -599,6 +623,7 @@ def get_training_device() -> str:
     """Determine the best available device for training."""
     try:
         import torch
+
         if torch.cuda.is_available():
             return "cuda"
         elif torch.backends.mps.is_available():
@@ -656,7 +681,7 @@ def train_gaussians(
             "Training requires PyTorch and gsplat. Install with:\n"
             "  pip install torch gsplat\n"
             f"Error: {e}"
-        )
+        ) from e
 
     if device is None:
         device = get_training_device()
@@ -684,20 +709,32 @@ def train_gaussians(
     print(f"  Loaded {len(train_images)} images")
 
     # Convert model to torch tensors
-    positions = torch.tensor(model.positions, dtype=torch.float32, device=device, requires_grad=True)
-    colors = torch.tensor(model.colors, dtype=torch.float32, device=device, requires_grad=True)
-    opacities = torch.tensor(model.opacities, dtype=torch.float32, device=device, requires_grad=True)
-    scales = torch.tensor(model.scales, dtype=torch.float32, device=device, requires_grad=True)
-    rotations = torch.tensor(model.rotations, dtype=torch.float32, device=device, requires_grad=True)
+    positions = torch.tensor(
+        model.positions, dtype=torch.float32, device=device, requires_grad=True
+    )
+    colors = torch.tensor(
+        model.colors, dtype=torch.float32, device=device, requires_grad=True
+    )
+    opacities = torch.tensor(
+        model.opacities, dtype=torch.float32, device=device, requires_grad=True
+    )
+    scales = torch.tensor(
+        model.scales, dtype=torch.float32, device=device, requires_grad=True
+    )
+    rotations = torch.tensor(
+        model.rotations, dtype=torch.float32, device=device, requires_grad=True
+    )
 
     # Optimizer
-    optimizer = torch.optim.Adam([
-        {"params": [positions], "lr": learning_rate * 0.1},
-        {"params": [colors], "lr": learning_rate},
-        {"params": [opacities], "lr": learning_rate * 0.5},
-        {"params": [scales], "lr": learning_rate * 0.1},
-        {"params": [rotations], "lr": learning_rate * 0.1},
-    ])
+    optimizer = torch.optim.Adam(
+        [
+            {"params": [positions], "lr": learning_rate * 0.1},
+            {"params": [colors], "lr": learning_rate},
+            {"params": [opacities], "lr": learning_rate * 0.5},
+            {"params": [scales], "lr": learning_rate * 0.1},
+            {"params": [rotations], "lr": learning_rate * 0.1},
+        ]
+    )
 
     # Training loop
     for iteration in range(iterations):
@@ -820,34 +857,46 @@ end_header
 
         for i in range(n_points):
             # Position
-            f.write(struct.pack("<fff",
-                model.positions[i, 0],
-                model.positions[i, 1],
-                model.positions[i, 2],
-            ))
+            f.write(
+                struct.pack(
+                    "<fff",
+                    model.positions[i, 0],
+                    model.positions[i, 1],
+                    model.positions[i, 2],
+                )
+            )
             # Normals (placeholder)
             f.write(struct.pack("<fff", 0.0, 0.0, 0.0))
             # SH DC coefficients (color)
-            f.write(struct.pack("<fff",
-                sh_dc[i, 0],
-                sh_dc[i, 1],
-                sh_dc[i, 2],
-            ))
+            f.write(
+                struct.pack(
+                    "<fff",
+                    sh_dc[i, 0],
+                    sh_dc[i, 1],
+                    sh_dc[i, 2],
+                )
+            )
             # Opacity (already in logit space)
             f.write(struct.pack("<f", model.opacities[i]))
             # Scales (log space)
-            f.write(struct.pack("<fff",
-                model.scales[i, 0],
-                model.scales[i, 1],
-                model.scales[i, 2],
-            ))
+            f.write(
+                struct.pack(
+                    "<fff",
+                    model.scales[i, 0],
+                    model.scales[i, 1],
+                    model.scales[i, 2],
+                )
+            )
             # Rotation quaternion
-            f.write(struct.pack("<ffff",
-                model.rotations[i, 0],
-                model.rotations[i, 1],
-                model.rotations[i, 2],
-                model.rotations[i, 3],
-            ))
+            f.write(
+                struct.pack(
+                    "<ffff",
+                    model.rotations[i, 0],
+                    model.rotations[i, 1],
+                    model.rotations[i, 2],
+                    model.rotations[i, 3],
+                )
+            )
 
 
 def export_initialization_ply(
