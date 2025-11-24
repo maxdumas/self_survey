@@ -1,18 +1,14 @@
 """
-Merge two NYS LiDAR LAS/LAZ tiles into a single point cloud.
+Merge LiDAR LAS/LAZ tiles into a single point cloud.
 
-Dependencies:
-    pip install open3d laspy[lazrs] numpy
-
-Usage:
-    python merge_lidar_tiles.py tile1.laz tile2.laz -o merged.laz
+This module provides functions for loading, merging, and saving LiDAR
+point clouds while preserving metadata like classification and intensity.
 """
 
 import numpy as np
 import laspy
 import open3d as o3d
 from pathlib import Path
-import argparse
 
 __all__ = [
     "load_las_to_open3d",
@@ -223,81 +219,3 @@ def visualize(pcd: o3d.geometry.PointCloud, metadata: dict, color_by: str = "rgb
         height=900,
         point_show_normal=False,
     )
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Merge two LAS/LAZ tiles into one")
-    parser.add_argument("tile1", help="First LAS/LAZ file")
-    parser.add_argument("tile2", help="Second LAS/LAZ file")
-    parser.add_argument(
-        "-o", "--output", default="merged.laz", help="Output file (default: merged.laz)"
-    )
-    parser.add_argument(
-        "--also-ply", action="store_true", help="Also save as PLY for Open3D workflows"
-    )
-    parser.add_argument(
-        "--visualize",
-        action="store_true",
-        help="Show interactive visualization after merge",
-    )
-    parser.add_argument(
-        "--color-by",
-        choices=["rgb", "classification", "intensity", "elevation"],
-        default="elevation",
-        help="Coloring for visualization",
-    )
-    parser.add_argument(
-        "--filter-ground",
-        action="store_true",
-        help="Output only ground points (classification=2)",
-    )
-
-    args = parser.parse_args()
-
-    # Load tiles
-    pcd1, meta1 = load_las_to_open3d(args.tile1)
-    pcd2, meta2 = load_las_to_open3d(args.tile2)
-
-    # Merge
-    merged_pcd, merged_meta = merge_point_clouds(pcd1, meta1, pcd2, meta2)
-
-    # Optional: filter to ground only
-    if args.filter_ground:
-        print("\nFiltering to ground points only (classification=2)...")
-        mask = merged_meta["classification"] == 2
-
-        points = np.asarray(merged_pcd.points)[mask]
-        merged_pcd.points = o3d.utility.Vector3dVector(points)
-
-        if merged_pcd.has_colors():
-            colors = np.asarray(merged_pcd.colors)[mask]
-            merged_pcd.colors = o3d.utility.Vector3dVector(colors)
-
-        merged_meta["classification"] = merged_meta["classification"][mask]
-        merged_meta["intensity"] = merged_meta["intensity"][mask]
-        if merged_meta.get("return_number") is not None:
-            merged_meta["return_number"] = merged_meta["return_number"][mask]
-            merged_meta["number_of_returns"] = merged_meta["number_of_returns"][mask]
-
-        print(f"  Ground points: {len(points):,}")
-
-    # Save
-    output_path = Path(args.output)
-    if output_path.suffix.lower() in [".laz", ".las"]:
-        save_as_laz(merged_pcd, merged_meta, str(output_path))
-    else:
-        save_as_ply(merged_pcd, str(output_path))
-
-    if args.also_ply and output_path.suffix.lower() != ".ply":
-        ply_path = output_path.with_suffix(".ply")
-        save_as_ply(merged_pcd, str(ply_path))
-
-    # Visualize
-    if args.visualize:
-        visualize(merged_pcd, merged_meta, args.color_by)
-
-    print("\nDone!")
-
-
-if __name__ == "__main__":
-    main()
