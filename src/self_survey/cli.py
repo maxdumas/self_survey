@@ -14,6 +14,9 @@ Usage
     # Register iPhone scan
     preprocess register polycam_scan.laz --reference nys_reference.laz -o merged.laz
 
+    # Generate elevation contours
+    preprocess contour merged.laz -o contours.dxf --interval 2
+
 See README.md for detailed documentation.
 """
 
@@ -21,6 +24,7 @@ import cyclopts
 
 from self_survey.commands.ingest import ingest
 from self_survey.commands.register import register
+from self_survey.commands.contour import contour
 
 app = cyclopts.App(
     name="preprocess",
@@ -30,6 +34,7 @@ app = cyclopts.App(
 # Register commands from separate modules
 app.command(ingest, name="ingest")
 app.command(register, name="register")
+app.command(contour, name="contour")
 
 
 def main() -> None:
