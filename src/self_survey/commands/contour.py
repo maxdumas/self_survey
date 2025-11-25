@@ -46,16 +46,16 @@ def contour(
     output: Annotated[
         Path,
         cyclopts.Parameter(
-            "--output",
-            "-o",
+            name="--output",
+            alias="-o",
             help="Output file path (.dxf or .geojson)",
         ),
     ],
     interval: Annotated[
         float,
         cyclopts.Parameter(
-            "--interval",
-            "-i",
+            name="--interval",
+            alias="-i",
             help="Elevation interval between contours (in file units, typically feet)",
         ),
     ] = 2.0,

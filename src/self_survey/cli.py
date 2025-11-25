@@ -7,6 +7,9 @@ separate modules under the commands/ package.
 Usage
 -----
 
+    # Download NYS tiles for a location
+    preprocess download 42.4532 -73.7891 500 -o ./tiles/
+
     # Ingest NYS LiDAR data
     preprocess ingest tile1.laz tile2.laz --ortho ortho.tif \\
         --lat 42.4532 --lon -73.7891 --radius 200 -o nys_reference.laz
@@ -26,6 +29,7 @@ See README.md for detailed documentation.
 import cyclopts
 
 from self_survey.commands.contour import contour
+from self_survey.commands.download import download
 from self_survey.commands.ingest import ingest
 from self_survey.commands.register import register
 from self_survey.commands.splat import splat
@@ -36,6 +40,7 @@ app = cyclopts.App(
 )
 
 # Register commands from separate modules
+app.command(download, name="download")
 app.command(ingest, name="ingest")
 app.command(register, name="register")
 app.command(contour, name="contour")

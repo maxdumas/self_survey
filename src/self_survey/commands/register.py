@@ -56,16 +56,16 @@ def register(
     reference: Annotated[
         Path,
         cyclopts.Parameter(
-            "--reference",
-            "-r",
+            name="--reference",
+            alias="-r",
             help="Reference LAS/LAZ file (NYS LiDAR, output from 'ingest' command)",
         ),
     ],
     output: Annotated[
         Path,
         cyclopts.Parameter(
-            "--output",
-            "-o",
+            name="--output",
+            alias="-o",
             help="Output merged LAZ/LAS file path",
         ),
     ],

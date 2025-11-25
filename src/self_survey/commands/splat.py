@@ -51,66 +51,66 @@ def splat(
     output: Annotated[
         Path,
         cyclopts.Parameter(
-            "--output",
-            "-o",
+            name="--output",
+            alias="-o",
             help="Output PLY file path for trained Gaussians",
         ),
     ],
     photos: Annotated[
         Path | None,
         cyclopts.Parameter(
-            "--photos",
-            "-p",
+            name="--photos",
+            alias="-p",
             help="Directory containing input photos for training",
         ),
     ] = None,
     colmap_workspace: Annotated[
         Path | None,
         cyclopts.Parameter(
-            "--colmap-workspace",
+            name="--colmap-workspace",
             help="Existing COLMAP workspace (skips COLMAP reconstruction)",
         ),
     ] = None,
     iterations: Annotated[
         int,
         cyclopts.Parameter(
-            "--iterations",
-            "-n",
+            name="--iterations",
+            alias="-n",
             help="Number of training iterations",
         ),
     ] = 30000,
     skip_training: Annotated[
         bool,
         cyclopts.Parameter(
-            "--skip-training",
+            name="--skip-training",
             help="Skip training, just export LiDAR-initialized Gaussians",
         ),
     ] = False,
     subsample: Annotated[
         int | None,
         cyclopts.Parameter(
-            "--subsample",
+            name="--subsample",
             help="Subsample LiDAR to this many points (for faster training)",
         ),
     ] = None,
     icp_distance: Annotated[
         float,
         cyclopts.Parameter(
-            "--icp-distance",
+            name="--icp-distance",
             help="Max correspondence distance for COLMAP-to-LiDAR registration",
         ),
     ] = 50.0,
     checkpoint_interval: Annotated[
         int,
         cyclopts.Parameter(
-            "--checkpoint-interval",
+            name="--checkpoint-interval",
             help="Save checkpoint every N iterations (0 to disable)",
         ),
     ] = 5000,
     use_gpu: Annotated[
         bool,
         cyclopts.Parameter(
-            "--gpu/--no-gpu",
+            name="--gpu/--no-gpu",
             help="Use GPU for COLMAP feature extraction/matching",
         ),
     ] = True,
