@@ -38,8 +38,8 @@ def ingest(
     output: Annotated[
         Path,
         cyclopts.Parameter(
-            "--output",
-            "-o",
+            name="--output",
+            alias="-o",
             help="Output LAZ/LAS file path",
         ),
     ],
