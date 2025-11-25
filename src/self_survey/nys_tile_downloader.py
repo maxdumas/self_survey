@@ -10,6 +10,7 @@ Services used:
 - DEM: NYS GIS Clearinghouse
 """
 
+import json
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -180,6 +181,259 @@ class NYSTileDownloader:
 
         except urllib.error.URLError as e:
             raise RuntimeError(f"Failed to query feature service: {e}") from e
+
+    def _query_arcgis_service_by_polygon(
+        self,
+        base_url: str,
+        layer_id: int,
+        geometry: dict[str, Any],
+        out_fields: str = "*",
+    ) -> list[dict[str, Any]]:
+        """
+        Query an ArcGIS MapServer layer using polygon geometry.
+
+        Args:
+            base_url: Base URL of the service
+            layer_id: Layer ID to query
+            geometry: ESRI geometry dict (polygon with rings in Web Mercator)
+            out_fields: Fields to return (default: all)
+
+        Returns:
+            List of feature attributes
+        """
+        query_url = f"{base_url}/{layer_id}/query"
+
+        # Convert geometry to JSON string for the request
+        geometry_json = json.dumps(geometry)
+
+        params = {
+            "f": "json",
+            "geometry": geometry_json,
+            "geometryType": "esriGeometryPolygon",
+            "inSR": "3857",
+            "spatialRel": "esriSpatialRelIntersects",
+            "outFields": out_fields,
+            "returnGeometry": "false",
+        }
+
+        url = f"{query_url}?{urllib.parse.urlencode(params)}"
+
+        try:
+            request = urllib.request.Request(url)
+            request.add_header("User-Agent", USER_AGENT)
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                data = json.loads(response.read().decode())
+
+            if "error" in data:
+                raise RuntimeError(f"ArcGIS query error: {data['error']}")
+
+            features = data.get("features", [])
+            return [f.get("attributes", {}) for f in features]
+
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"Failed to query service: {e}") from e
+
+    def query_ortho_tiles_by_polygon(
+        self,
+        geometry: dict[str, Any],
+        year: str = "latest",
+    ) -> list[dict[str, Any]]:
+        """
+        Query orthoimagery tiles intersecting a polygon.
+
+        Args:
+            geometry: ESRI geometry dict (polygon with rings in Web Mercator)
+            year: Imagery year ('2021', '2022', '2023', 'latest')
+
+        Returns:
+            List of tile info dicts with 'name' and 'url' keys
+        """
+        year_layer_map = {
+            "latest": 0,
+            "2024": 1,
+            "2023": 2,
+            "2022": 3,
+            "2021": 4,
+            "2020": 5,
+            "2019": 6,
+            "2018": 7,
+        }
+
+        layer_id = year_layer_map.get(year.lower(), 0)
+
+        try:
+            features = self._query_arcgis_service_by_polygon(
+                ORTHO_INDEX_URL,
+                layer_id,
+                geometry,
+                out_fields="*",
+            )
+        except Exception as e:
+            print(f"  Warning: Could not query ortho index service: {e}")
+            return []
+
+        return self._parse_ortho_features(features, year)
+
+    def query_lidar_tiles_by_polygon(
+        self,
+        geometry: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """
+        Query LiDAR tiles intersecting a polygon.
+
+        Args:
+            geometry: ESRI geometry dict (polygon with rings in Web Mercator)
+
+        Returns:
+            List of tile info dicts with 'name', 'url', and 'project' keys
+        """
+        try:
+            features = self._query_arcgis_service_by_polygon(
+                LIDAR_INDEX_URL,
+                0,
+                geometry,
+                out_fields="*",
+            )
+        except Exception as e:
+            print(f"  Warning: Could not query LiDAR index service: {e}")
+            # Try alternative layers
+            for layer_id in range(1, 10):
+                try:
+                    features = self._query_arcgis_service_by_polygon(
+                        LIDAR_INDEX_URL,
+                        layer_id,
+                        geometry,
+                        out_fields="*",
+                    )
+                    if features:
+                        break
+                except Exception:
+                    continue
+            else:
+                return []
+
+        return self._parse_lidar_features(features)
+
+    def query_dem_tiles_by_polygon(
+        self,
+        geometry: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """
+        Query DEM tiles intersecting a polygon.
+
+        Args:
+            geometry: ESRI geometry dict (polygon with rings in Web Mercator)
+
+        Returns:
+            List of tile info dicts with 'name' and 'url' keys
+        """
+        # Get LiDAR tiles first, then derive DEM info
+        lidar_tiles = self.query_lidar_tiles_by_polygon(geometry)
+
+        tiles = []
+        seen_projects = set()
+
+        for tile in lidar_tiles:
+            project = tile.get("project", "unknown")
+            if project != "unknown" and project not in seen_projects:
+                seen_projects.add(project)
+                dem_name = f"{project}_dem.tif"
+                dem_url = f"{FTP_DEM_BASE}/{project}/{dem_name}"
+                tiles.append({
+                    "name": dem_name,
+                    "url": dem_url,
+                    "project": project,
+                    "attributes": {},
+                })
+
+        return tiles
+
+    def _parse_ortho_features(
+        self, features: list[dict[str, Any]], year: str
+    ) -> list[dict[str, Any]]:
+        """Parse ortho feature attributes into tile info dicts."""
+        tiles = []
+        for attrs in features:
+            name = (
+                attrs.get("TILENAME")
+                or attrs.get("TileName")
+                or attrs.get("tile_name")
+                or attrs.get("NAME")
+                or attrs.get("name")
+                or "unknown"
+            )
+
+            url = (
+                attrs.get("DOWNLOAD")
+                or attrs.get("Download")
+                or attrs.get("download_url")
+                or attrs.get("URL")
+                or attrs.get("url")
+                or attrs.get("DownloadURL")
+            )
+
+            if url:
+                if not name.endswith((".tif", ".tiff", ".zip", ".sid")):
+                    name = f"{name}.zip"
+
+                tiles.append({
+                    "name": name,
+                    "url": url,
+                    "year": year,
+                    "attributes": attrs,
+                })
+
+        return tiles
+
+    def _parse_lidar_features(
+        self, features: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Parse LiDAR feature attributes into tile info dicts."""
+        tiles = []
+        for attrs in features:
+            name = (
+                attrs.get("TILENAME")
+                or attrs.get("TileName")
+                or attrs.get("tile_name")
+                or attrs.get("NAME")
+                or attrs.get("Tile")
+                or "unknown"
+            )
+
+            project = (
+                attrs.get("PROJECT")
+                or attrs.get("Project")
+                or attrs.get("project_name")
+                or attrs.get("Collection")
+                or "unknown"
+            )
+
+            url = (
+                attrs.get("DOWNLOAD")
+                or attrs.get("Download")
+                or attrs.get("download_url")
+                or attrs.get("URL")
+                or attrs.get("url")
+                or attrs.get("DownloadPath")
+            )
+
+            if not url and name != "unknown":
+                url = f"{FTP_LIDAR_BASE}/{project}/{name}"
+                if not url.endswith((".laz", ".las", ".zip")):
+                    url = f"{url}.laz"
+
+            if url:
+                if not name.endswith((".laz", ".las", ".zip")):
+                    name = f"{name}.laz"
+
+                tiles.append({
+                    "name": name,
+                    "url": url,
+                    "project": project,
+                    "attributes": attrs,
+                })
+
+        return tiles
 
     def query_ortho_tiles(
         self,

@@ -7,6 +7,9 @@ separate modules under the commands/ package.
 Usage
 -----
 
+    # Process a parcel by SBL (all-in-one)
+    preprocess parcel "123.45-6-7" -m "Albany" -o parcel_survey.laz
+
     # Download NYS tiles for a location
     preprocess download 42.4532 -73.7891 500 -o ./tiles/
 
@@ -31,6 +34,7 @@ import cyclopts
 from self_survey.commands.contour import contour
 from self_survey.commands.download import download
 from self_survey.commands.ingest import ingest
+from self_survey.commands.parcel import parcel
 from self_survey.commands.register import register
 from self_survey.commands.splat import splat
 
@@ -40,6 +44,7 @@ app = cyclopts.App(
 )
 
 # Register commands from separate modules
+app.command(parcel, name="parcel")
 app.command(download, name="download")
 app.command(ingest, name="ingest")
 app.command(register, name="register")
