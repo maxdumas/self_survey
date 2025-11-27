@@ -356,18 +356,10 @@ class NYSTileDownloader:
         self, features: list[dict[str, Any]], year: str
     ) -> list[dict[str, Any]]:
         """Parse ortho feature attributes into tile info dicts."""
+        from urllib.parse import urlparse
+
         tiles = []
         for attrs in features:
-            name = (
-                attrs.get("FILENAME")
-                or attrs.get("TILENAME")
-                or attrs.get("TileName")
-                or attrs.get("tile_name")
-                or attrs.get("NAME")
-                or attrs.get("name")
-                or "unknown"
-            )
-
             url = (
                 attrs.get("DIRECT_DL")
                 or attrs.get("DOWNLOAD")
@@ -379,8 +371,24 @@ class NYSTileDownloader:
             )
 
             if url:
-                if not name.endswith((".tif", ".tiff", ".zip", ".sid", ".jp2")):
-                    name = f"{name}.zip"
+                # Derive filename from URL to get correct extension
+                # (URLs often end in .zip even if FILENAME says .jp2)
+                url_path = urlparse(url).path
+                name = url_path.split("/")[-1] if url_path else None
+
+                # Fall back to FILENAME attribute if URL parsing fails
+                if not name:
+                    name = (
+                        attrs.get("FILENAME")
+                        or attrs.get("TILENAME")
+                        or attrs.get("TileName")
+                        or attrs.get("tile_name")
+                        or attrs.get("NAME")
+                        or attrs.get("name")
+                        or "unknown"
+                    )
+                    if not name.endswith((".tif", ".tiff", ".zip", ".sid", ".jp2")):
+                        name = f"{name}.zip"
 
                 tiles.append(
                     {
