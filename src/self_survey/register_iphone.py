@@ -44,10 +44,13 @@ iPhone data REPLACES (not blends with) NYS data in the overlap region.
 This avoids double-density artifacts and provides clear data provenance.
 """
 
+import json
+
 import laspy
 import numpy as np
 import open3d as o3d
 from pyproj import CRS, Transformer
+from scipy.spatial import ConvexHull
 
 from self_survey.clip_to_radius import get_crs_from_las
 
@@ -58,19 +61,33 @@ __all__ = [
     "apply_transform_to_las",
     "transfer_ground_classification",
     "merge_with_replacement",
+    "get_iphone_boundary_from_las",
 ]
 
 
 def load_and_transform_to_crs(
     las_path: str,
     target_crs: CRS,
+    initial_position: tuple[float, float] | None = None,
+    reference_las: "laspy.LasData | None" = None,
 ) -> tuple[laspy.LasData, CRS, np.ndarray | None]:
     """
     Load a LAS file and transform coordinates to target CRS if needed.
 
+    For iPhone scans in local coordinates (no CRS metadata), the initial_position
+    parameter specifies where the scan was taken. The local coordinates will be
+    translated so that the scan's centroid is at initial_position.
+
+    If reference_las is provided, the Z coordinates will also be adjusted to match
+    the approximate ground elevation at the initial position.
+
     Args:
         las_path: Path to LAS/LAZ file
         target_crs: Target coordinate reference system
+        initial_position: (x, y) in target CRS where the scan was taken.
+            Required for scans without CRS metadata (local coordinates).
+        reference_las: Reference LAS data for estimating ground elevation.
+            Used to align Z coordinates for local-coordinate scans.
 
     Returns:
         Tuple of (las_data, source_crs, transformation_applied)
@@ -83,8 +100,111 @@ def load_and_transform_to_crs(
 
     if source_crs is None:
         print("  WARNING: Could not detect CRS from file")
-        print("  Assuming coordinates are already in target CRS")
-        return las, target_crs, None
+        print("  File appears to be in local coordinates")
+
+        # Calculate scan extent (for informational purposes)
+        x_center = (las.x.max() + las.x.min()) / 2
+        y_center = (las.y.max() + las.y.min()) / 2
+
+        print(f"  Local bounds X: [{las.x.min():.2f}, {las.x.max():.2f}]")
+        print(f"  Local bounds Y: [{las.y.min():.2f}, {las.y.max():.2f}]")
+        print(f"  Local center: ({x_center:.2f}, {y_center:.2f})")
+
+        if initial_position is None:
+            raise ValueError(
+                "iPhone scan has no CRS metadata and appears to be in local coordinates. "
+                "Please provide --lat and --lon to specify the scan location."
+            )
+
+        # Translate local coordinates to target CRS
+        # Center the scan on the initial_position
+        target_x, target_y = initial_position
+        offset_x = target_x - x_center
+        offset_y = target_y - y_center
+
+        # Estimate Z offset from reference ground elevation
+        offset_z = 0.0
+        if reference_las is not None:
+            # Find reference ground points near the initial position
+            ref_x = np.array(reference_las.x)
+            ref_y = np.array(reference_las.y)
+            ref_z = np.array(reference_las.z)
+            ref_class = np.array(reference_las.classification)
+
+            # Use ground points (classification=2) if available
+            ground_mask = ref_class == 2
+            if np.sum(ground_mask) > 0:
+                ref_x_ground = ref_x[ground_mask]
+                ref_y_ground = ref_y[ground_mask]
+                ref_z_ground = ref_z[ground_mask]
+            else:
+                # Fall back to all points
+                ref_x_ground = ref_x
+                ref_y_ground = ref_y
+                ref_z_ground = ref_z
+
+            # Find points within a search radius of the initial position
+            search_radius = 50.0  # feet
+            distances = np.sqrt((ref_x_ground - target_x)**2 + (ref_y_ground - target_y)**2)
+            nearby_mask = distances < search_radius
+
+            if np.sum(nearby_mask) > 0:
+                # Use median elevation of nearby ground points
+                ref_ground_z = np.median(ref_z_ground[nearby_mask])
+                # iPhone scan Z is likely relative to ground (0 = ground level)
+                # So offset by the reference ground elevation
+                iphone_min_z = las.z.min()
+                offset_z = ref_ground_z - iphone_min_z
+                print(f"  Reference ground elevation near center: {ref_ground_z:.2f}")
+                print(f"  iPhone min Z: {iphone_min_z:.2f}")
+            else:
+                print(f"  WARNING: No reference points found within {search_radius} units of center")
+                print(f"  Z offset will be 0 - vertical alignment may be wrong")
+
+        print(f"\n  Translating to target CRS...")
+        print(f"  Target center: ({target_x:.2f}, {target_y:.2f})")
+        print(f"  Offset XY: ({offset_x:.2f}, {offset_y:.2f})")
+        print(f"  Offset Z: {offset_z:.2f}")
+
+        x_new = np.array(las.x) + offset_x
+        y_new = np.array(las.y) + offset_y
+        z_new = np.array(las.z) + offset_z
+
+        # Create new LAS with translated coordinates
+        new_header = laspy.LasHeader(point_format=las.header.point_format, version="1.4")
+        new_header.scales = las.header.scales
+        new_header.offsets = [np.min(x_new), np.min(y_new), np.min(z_new)]
+
+        # Copy VLRs
+        for vlr in las.header.vlrs:
+            new_header.vlrs.append(vlr)
+
+        new_las = laspy.LasData(new_header)
+        new_las.x = x_new
+        new_las.y = y_new
+        new_las.z = z_new
+
+        # Copy other attributes
+        new_las.intensity = las.intensity
+        new_las.classification = las.classification
+
+        if hasattr(las, "red") and hasattr(las, "green") and hasattr(las, "blue"):
+            new_las.red = las.red
+            new_las.green = las.green
+            new_las.blue = las.blue
+
+        if hasattr(las, "return_number"):
+            new_las.return_number = las.return_number
+        if hasattr(las, "number_of_returns"):
+            new_las.number_of_returns = las.number_of_returns
+
+        offset = np.array([offset_x, offset_y, offset_z])
+
+        print(f"  New bounds X: [{x_new.min():.2f}, {x_new.max():.2f}]")
+        print(f"  New bounds Y: [{y_new.min():.2f}, {y_new.max():.2f}]")
+        print(f"  New bounds Z: [{z_new.min():.2f}, {z_new.max():.2f}]")
+
+        return new_las, target_crs, offset
 
     print(f"  Source CRS: {source_crs.name}")
     print(f"  Target CRS: {target_crs.name}")
@@ -237,24 +357,16 @@ def icp_align(
     target_pcd = o3d.geometry.PointCloud()
     target_pcd.points = o3d.utility.Vector3dVector(target_points)
 
-    # Estimate normals for point-to-plane ICP (better for ground surfaces)
-    source_pcd.estimate_normals(
-        search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=5.0, max_nn=30)
-    )
-    target_pcd.estimate_normals(
-        search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=5.0, max_nn=30)
-    )
-
     # Initial identity transformation
     init_transform = np.eye(4)
 
-    # Run point-to-plane ICP
+    # First try point-to-point ICP (more robust for initial alignment)
     result = o3d.pipelines.registration.registration_icp(
         source_pcd,
         target_pcd,
         max_correspondence_distance,
         init_transform,
-        o3d.pipelines.registration.TransformationEstimationPointToPlane(),
+        o3d.pipelines.registration.TransformationEstimationPointToPoint(),
         o3d.pipelines.registration.ICPConvergenceCriteria(
             max_iteration=max_iterations,
             relative_fitness=fitness_threshold,
@@ -474,25 +586,25 @@ def transfer_ground_classification(
 def merge_with_replacement(
     reference_las: laspy.LasData,
     iphone_las: laspy.LasData,
-    replacement_radius: float | None = None,
+    no_replace: bool = False,
 ) -> laspy.LasData:
     """
-    Merge two point clouds, replacing reference points in overlap region with iPhone points.
+    Merge two point clouds, optionally replacing reference points in overlap region.
 
-    Strategy: REPLACEMENT, not blending
-    ------------------------------------
-    In the overlap region, iPhone data completely replaces NYS data rather than
-    being blended or merged. This approach:
+    Strategy: REPLACEMENT (default) or BLEND
+    -----------------------------------------
+    By default, iPhone data completely replaces NYS data in the overlap region.
+    If no_replace=True, all points from both clouds are kept (blended).
 
+    Replacement approach:
     1. Avoids double-density artifacts at boundaries
     2. Provides clear data provenance (each point comes from one source)
     3. Prioritizes higher-resolution iPhone data where available
     4. Simplifies downstream processing
 
-    The overlap region is defined as a circle centered on the iPhone scan's
-    centroid with radius equal to the scan's maximum extent (plus 10% buffer).
+    The overlap region is defined by the convex hull of the iPhone scan points.
 
-    Visualization:
+    Visualization (replacement mode):
         ┌─────────────────────────────────────┐
         │                                     │
         │         NYS Data (kept)             │
@@ -510,20 +622,22 @@ def merge_with_replacement(
 
     Args:
         reference_las: Reference LAS data (NYS). Lower resolution but covers
-            larger area. Points within the replacement region will be excluded.
+            larger area. Points within the iPhone scan convex hull will be
+            excluded unless no_replace=True.
         iphone_las: iPhone LAS data (from Polycam). Higher resolution, takes
             priority in the overlap region. Should be aligned via ICP first.
-        replacement_radius: If provided, defines the circular region around the
-            iPhone scan center where reference points are excluded. If None,
-            auto-calculated as 1.1 × (max distance from centroid to any iPhone point).
+        no_replace: If True, keep all reference points (blend instead of replace).
 
     Returns:
         Merged LAS data with:
-        - Reference points outside the replacement region
+        - Reference points (all if no_replace, else only outside convex hull)
         - All iPhone points
         - Attributes (RGB, classification, intensity) preserved from both sources
     """
-    print("Merging point clouds with replacement...")
+    if no_replace:
+        print("Merging point clouds (blending - keeping all points)...")
+    else:
+        print("Merging point clouds with replacement...")
 
     ref_points = np.vstack((reference_las.x, reference_las.y, reference_las.z)).T
     iphone_points = np.vstack((iphone_las.x, iphone_las.y, iphone_las.z)).T
@@ -531,26 +645,32 @@ def merge_with_replacement(
     print(f"  Reference points: {len(ref_points):,}")
     print(f"  iPhone points: {len(iphone_points):,}")
 
-    # Determine replacement region from iPhone scan extent
+    # Compute iPhone scan center for metadata
     iphone_center = np.mean(iphone_points[:, :2], axis=0)
-    iphone_extent = np.max(np.linalg.norm(iphone_points[:, :2] - iphone_center, axis=1))
-
-    if replacement_radius is None:
-        # Use iPhone scan extent as replacement radius
-        replacement_radius = iphone_extent * 1.1  # 10% buffer
-
     print(f"  iPhone scan center: ({iphone_center[0]:.2f}, {iphone_center[1]:.2f})")
-    print(f"  iPhone scan extent: {iphone_extent:.2f}")
-    print(f"  Replacement radius: {replacement_radius:.2f}")
 
-    # Find reference points outside the iPhone scan region
-    # Using a simple circular region around iPhone center
-    ref_distances = np.linalg.norm(ref_points[:, :2] - iphone_center, axis=1)
-    keep_mask = ref_distances > replacement_radius
+    # Compute convex hull of iPhone points for boundary
+    hull = ConvexHull(iphone_points[:, :2])
+    boundary_polygon = iphone_points[hull.vertices, :2]
+    print(f"  iPhone boundary: convex hull with {len(boundary_polygon)} vertices")
+
+    if no_replace:
+        # Keep all reference points
+        keep_mask = np.ones(len(ref_points), dtype=bool)
+        print(f"  Blending mode: keeping all {len(ref_points):,} reference points")
+    else:
+        # Find reference points outside the iPhone scan convex hull
+        # Use matplotlib's Path for point-in-polygon test
+        from matplotlib.path import Path
+
+        hull_path = Path(boundary_polygon)
+        inside_hull = hull_path.contains_points(ref_points[:, :2])
+        keep_mask = ~inside_hull
+
+        print(f"  Reference points kept (outside hull): {np.sum(keep_mask):,}")
+        print(f"  Reference points replaced: {np.sum(~keep_mask):,}")
 
     kept_ref_points = ref_points[keep_mask]
-    print(f"  Reference points kept (outside overlap): {len(kept_ref_points):,}")
-    print(f"  Reference points replaced: {np.sum(~keep_mask):,}")
 
     # Build output LAS
     # Use reference header as template (preserves CRS)
@@ -562,15 +682,56 @@ def merge_with_replacement(
     merged_y = np.concatenate([kept_ref_points[:, 1], iphone_points[:, 1]])
     merged_z = np.concatenate([kept_ref_points[:, 2], iphone_points[:, 2]])
 
+    # Check if either source has RGB to determine output format
+    def has_rgb(las):
+        try:
+            _ = las.red
+            return True
+        except Exception:
+            return False
+
+    either_has_rgb = has_rgb(reference_las) or has_rgb(iphone_las)
+
+    # Determine output point format - ensure it supports RGB if either input has it
+    source_format = reference_las.header.point_format.id
+    if either_has_rgb:
+        # Map non-RGB formats to their RGB equivalents
+        format_mapping = {
+            0: 2,  # Format 0 -> Format 2 (adds RGB)
+            1: 3,  # Format 1 -> Format 3 (adds RGB)
+            6: 7,  # Format 6 -> Format 7 (adds RGB)
+            9: 10, # Format 9 -> Format 10 (adds RGB)
+        }
+        output_format = format_mapping.get(source_format, source_format)
+        # If source already supports RGB, keep it
+        if source_format in [2, 3, 5, 7, 8, 10]:
+            output_format = source_format
+    else:
+        output_format = source_format
+
     # Create new header
     new_header = laspy.LasHeader(
-        point_format=reference_las.header.point_format, version="1.4"
+        point_format=output_format, version="1.4"
     )
     new_header.scales = reference_las.header.scales
     new_header.offsets = [np.min(merged_x), np.min(merged_y), np.min(merged_z)]
 
     for vlr in reference_las.header.vlrs:
         new_header.vlrs.append(vlr)
+
+    # Add iPhone scan boundary as custom VLR (reuse convex hull computed earlier)
+    boundary_data = {
+        "type": "iphone_scan_boundary",
+        "polygon": boundary_polygon.tolist(),
+        "center": iphone_center.tolist(),
+    }
+    boundary_vlr = laspy.VLR(
+        user_id="self-survey",
+        record_id=1001,
+        record_data=json.dumps(boundary_data).encode("utf-8"),
+        description="iPhone scan boundary from registration",
+    )
+    new_header.vlrs.append(boundary_vlr)
 
     merged_las = laspy.LasData(new_header)
     merged_las.x = merged_x
@@ -588,39 +749,94 @@ def merge_with_replacement(
         [ref_classification, iphone_classification]
     )
 
-    # Merge RGB if both have it
-    ref_has_rgb = hasattr(reference_las, "red")
-    iphone_has_rgb = hasattr(iphone_las, "red")
+    # Check RGB support (reuse has_rgb from above)
+    ref_has_rgb = has_rgb(reference_las)
+    iphone_has_rgb = has_rgb(iphone_las)
+
+    print(f"  Reference has RGB: {ref_has_rgb}")
+    print(f"  iPhone has RGB: {iphone_has_rgb}")
+
+    # Helper to scale 8-bit RGB to 16-bit if needed
+    def scale_rgb_to_16bit(rgb_array):
+        rgb = np.array(rgb_array)
+        # If max value is <= 255, it's 8-bit and needs scaling
+        if rgb.max() <= 255:
+            return (rgb.astype(np.uint16) * 257).astype(np.uint16)  # 257 = 65535/255
+        return rgb.astype(np.uint16)
 
     if ref_has_rgb and iphone_has_rgb:
-        merged_las.red = np.concatenate(
-            [np.array(reference_las.red)[keep_mask], np.array(iphone_las.red)]
-        )
-        merged_las.green = np.concatenate(
-            [np.array(reference_las.green)[keep_mask], np.array(iphone_las.green)]
-        )
-        merged_las.blue = np.concatenate(
-            [np.array(reference_las.blue)[keep_mask], np.array(iphone_las.blue)]
-        )
+        ref_red = scale_rgb_to_16bit(reference_las.red)[keep_mask]
+        ref_green = scale_rgb_to_16bit(reference_las.green)[keep_mask]
+        ref_blue = scale_rgb_to_16bit(reference_las.blue)[keep_mask]
+        iphone_red = scale_rgb_to_16bit(iphone_las.red)
+        iphone_green = scale_rgb_to_16bit(iphone_las.green)
+        iphone_blue = scale_rgb_to_16bit(iphone_las.blue)
+
+        merged_las.red = np.concatenate([ref_red, iphone_red])
+        merged_las.green = np.concatenate([ref_green, iphone_green])
+        merged_las.blue = np.concatenate([ref_blue, iphone_blue])
     elif ref_has_rgb:
-        # Reference has RGB, iPhone doesn't - fill with white
+        # Reference has RGB, iPhone doesn't - fill iPhone with white
         merged_las.red = np.concatenate(
             [
-                np.array(reference_las.red)[keep_mask],
+                scale_rgb_to_16bit(reference_las.red)[keep_mask],
                 np.full(len(iphone_points), 65535, dtype=np.uint16),
             ]
         )
         merged_las.green = np.concatenate(
             [
-                np.array(reference_las.green)[keep_mask],
+                scale_rgb_to_16bit(reference_las.green)[keep_mask],
                 np.full(len(iphone_points), 65535, dtype=np.uint16),
             ]
         )
         merged_las.blue = np.concatenate(
             [
-                np.array(reference_las.blue)[keep_mask],
+                scale_rgb_to_16bit(reference_las.blue)[keep_mask],
                 np.full(len(iphone_points), 65535, dtype=np.uint16),
+            ]
+        )
+    elif iphone_has_rgb:
+        # iPhone has RGB, reference doesn't - fill reference with white
+        merged_las.red = np.concatenate(
+            [
+                np.full(np.sum(keep_mask), 65535, dtype=np.uint16),
+                scale_rgb_to_16bit(iphone_las.red),
+            ]
+        )
+        merged_las.green = np.concatenate(
+            [
+                np.full(np.sum(keep_mask), 65535, dtype=np.uint16),
+                scale_rgb_to_16bit(iphone_las.green),
+            ]
+        )
+        merged_las.blue = np.concatenate(
+            [
+                np.full(np.sum(keep_mask), 65535, dtype=np.uint16),
+                scale_rgb_to_16bit(iphone_las.blue),
             ]
         )
 
     return merged_las
+
+
+def get_iphone_boundary_from_las(las: laspy.LasData) -> dict | None:
+    """
+    Read iPhone scan boundary VLR if present in a LAS file.
+
+    The boundary is stored during merge_with_replacement() as a custom VLR
+    with user_id="self-survey" and record_id=1001.
+
+    Args:
+        las: LAS data to check for boundary VLR
+
+    Returns:
+        Dictionary with boundary data if found:
+        - "type": "iphone_scan_boundary"
+        - "polygon": List of [x, y] coordinates forming the convex hull
+        - "center": [x, y] center point of the iPhone scan
+        Returns None if no boundary VLR is present.
+    """
+    for vlr in las.header.vlrs:
+        if vlr.user_id == "self-survey" and vlr.record_id == 1001:
+            return json.loads(vlr.record_data.decode("utf-8"))
+    return None

@@ -7,12 +7,43 @@ This command handles the initial preparation of NYS LiDAR reference data:
 - Clip to circular region around property center
 """
 
+import tempfile
+import zipfile
 from pathlib import Path
 from typing import Annotated
 
 import cyclopts
 import laspy
 import numpy as np
+
+
+def _extract_ortho_from_zip(zip_path: Path, temp_dir: Path) -> Path | None:
+    """
+    Extract orthoimagery file from a ZIP archive.
+
+    NYS orthoimagery downloads are often ZIP files containing the actual
+    JP2/TIF image along with auxiliary files.
+
+    Returns the path to the extracted image file, or None if no image found.
+    """
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            # Look for image files in the archive
+            image_extensions = (".jp2", ".tif", ".tiff", ".sid")
+            image_files = [
+                name for name in zf.namelist()
+                if name.lower().endswith(image_extensions)
+            ]
+
+            if not image_files:
+                return None
+
+            # Extract the first image file found
+            image_name = image_files[0]
+            zf.extract(image_name, temp_dir)
+            return temp_dir / image_name
+    except zipfile.BadZipFile:
+        return None
 
 
 def ingest(
@@ -158,9 +189,38 @@ def ingest(
         print("STEP 2: Colorizing from orthoimagery")
         print("=" * 60)
 
-        for ortho_file in ortho:
-            print(f"\nProcessing {ortho_file.name}...")
-            merged_pcd = colorize_point_cloud(merged_pcd, str(ortho_file))
+        # Detect the source CRS from the first LiDAR tile for coordinate transformation
+        # This is needed because ortho imagery may be in a different CRS
+        first_tile_las = laspy.read(str(tiles[0]))
+        source_crs = get_crs_from_las(first_tile_las)
+
+        if source_crs:
+            print(f"\n  LiDAR CRS: {source_crs.name}")
+        else:
+            print("\n  Warning: Could not detect LiDAR CRS, colorization may fail")
+            print("  Consider specifying --epsg if colors look wrong")
+
+        # Create a temp directory for extracting any ZIP files
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+
+            for ortho_file in ortho:
+                print(f"\nProcessing {ortho_file.name}...")
+
+                # Check if this is a ZIP file (NYS downloads orthos as ZIPs)
+                actual_ortho_path = ortho_file
+                if zipfile.is_zipfile(ortho_file):
+                    print(f"  Extracting from ZIP archive...")
+                    extracted = _extract_ortho_from_zip(ortho_file, temp_path)
+                    if extracted is None:
+                        print(f"  Warning: No image file found in {ortho_file.name}, skipping")
+                        continue
+                    actual_ortho_path = extracted
+                    print(f"  Using: {extracted.name}")
+
+                merged_pcd = colorize_point_cloud(
+                    merged_pcd, str(actual_ortho_path), source_crs=source_crs
+                )
 
     # Step 3: Clip to radius
     print("\n" + "=" * 60)

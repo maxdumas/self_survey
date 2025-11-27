@@ -21,8 +21,12 @@ from pyproj import CRS, Transformer
 __all__ = ["NYSTileDownloader"]
 
 # NYS ArcGIS REST service endpoints (from orthos.its.ny.gov)
-ORTHO_INDEX_URL = "https://orthos.its.ny.gov/arcgis/rest/services/vector/ortho_indexes/MapServer"
-LIDAR_INDEX_URL = "https://orthos.its.ny.gov/arcgis/rest/services/vector/las_indexes/MapServer"
+ORTHO_INDEX_URL = (
+    "https://orthos.its.ny.gov/arcgis/rest/services/vector/ortho_indexes/MapServer"
+)
+LIDAR_INDEX_URL = (
+    "https://orthos.its.ny.gov/arcgis/rest/services/vector/las_indexes/MapServer"
+)
 
 # FTP/HTTP base URLs for downloads
 FTP_LIDAR_BASE = "ftp://ftp.gis.ny.gov/elevation/LIDAR"
@@ -59,9 +63,7 @@ class NYSTileDownloader:
             self._wgs84, self._web_mercator, always_xy=True
         )
 
-    def _transform_to_web_mercator(
-        self, lat: float, lon: float
-    ) -> tuple[float, float]:
+    def _transform_to_web_mercator(self, lat: float, lon: float) -> tuple[float, float]:
         """Transform WGS84 lat/lon to Web Mercator coordinates."""
         x, y = self._transformer.transform(lon, lat)
         return x, y
@@ -339,12 +341,14 @@ class NYSTileDownloader:
                 seen_projects.add(project)
                 dem_name = f"{project}_dem.tif"
                 dem_url = f"{FTP_DEM_BASE}/{project}/{dem_name}"
-                tiles.append({
-                    "name": dem_name,
-                    "url": dem_url,
-                    "project": project,
-                    "attributes": {},
-                })
+                tiles.append(
+                    {
+                        "name": dem_name,
+                        "url": dem_url,
+                        "project": project,
+                        "attributes": {},
+                    }
+                )
 
         return tiles
 
@@ -352,19 +356,13 @@ class NYSTileDownloader:
         self, features: list[dict[str, Any]], year: str
     ) -> list[dict[str, Any]]:
         """Parse ortho feature attributes into tile info dicts."""
+        from urllib.parse import urlparse
+
         tiles = []
         for attrs in features:
-            name = (
-                attrs.get("TILENAME")
-                or attrs.get("TileName")
-                or attrs.get("tile_name")
-                or attrs.get("NAME")
-                or attrs.get("name")
-                or "unknown"
-            )
-
             url = (
-                attrs.get("DOWNLOAD")
+                attrs.get("DIRECT_DL")
+                or attrs.get("DOWNLOAD")
                 or attrs.get("Download")
                 or attrs.get("download_url")
                 or attrs.get("URL")
@@ -373,15 +371,33 @@ class NYSTileDownloader:
             )
 
             if url:
-                if not name.endswith((".tif", ".tiff", ".zip", ".sid")):
-                    name = f"{name}.zip"
+                # Derive filename from URL to get correct extension
+                # (URLs often end in .zip even if FILENAME says .jp2)
+                url_path = urlparse(url).path
+                name = url_path.split("/")[-1] if url_path else None
 
-                tiles.append({
-                    "name": name,
-                    "url": url,
-                    "year": year,
-                    "attributes": attrs,
-                })
+                # Fall back to FILENAME attribute if URL parsing fails
+                if not name:
+                    name = (
+                        attrs.get("FILENAME")
+                        or attrs.get("TILENAME")
+                        or attrs.get("TileName")
+                        or attrs.get("tile_name")
+                        or attrs.get("NAME")
+                        or attrs.get("name")
+                        or "unknown"
+                    )
+                    if not name.endswith((".tif", ".tiff", ".zip", ".sid", ".jp2")):
+                        name = f"{name}.zip"
+
+                tiles.append(
+                    {
+                        "name": name,
+                        "url": url,
+                        "year": year,
+                        "attributes": attrs,
+                    }
+                )
 
         return tiles
 
@@ -392,7 +408,8 @@ class NYSTileDownloader:
         tiles = []
         for attrs in features:
             name = (
-                attrs.get("TILENAME")
+                attrs.get("FILENAME")
+                or attrs.get("TILENAME")
                 or attrs.get("TileName")
                 or attrs.get("tile_name")
                 or attrs.get("NAME")
@@ -401,7 +418,8 @@ class NYSTileDownloader:
             )
 
             project = (
-                attrs.get("PROJECT")
+                attrs.get("COLLECTION")
+                or attrs.get("PROJECT")
                 or attrs.get("Project")
                 or attrs.get("project_name")
                 or attrs.get("Collection")
@@ -409,7 +427,8 @@ class NYSTileDownloader:
             )
 
             url = (
-                attrs.get("DOWNLOAD")
+                attrs.get("DIRECT_DL")
+                or attrs.get("DOWNLOAD")
                 or attrs.get("Download")
                 or attrs.get("download_url")
                 or attrs.get("URL")
@@ -426,14 +445,39 @@ class NYSTileDownloader:
                 if not name.endswith((".laz", ".las", ".zip")):
                     name = f"{name}.laz"
 
-                tiles.append({
-                    "name": name,
-                    "url": url,
-                    "project": project,
-                    "attributes": attrs,
-                })
+                tiles.append(
+                    {
+                        "name": name,
+                        "url": url,
+                        "project": project,
+                        "attributes": attrs,
+                    }
+                )
 
         return tiles
+
+    def _get_ortho_layer_ids(self) -> list[int]:
+        """Get all layer IDs from the orthoimagery index service."""
+        url = f"{ORTHO_INDEX_URL}?f=json"
+        try:
+            request = urllib.request.Request(url)
+            request.add_header("User-Agent", USER_AGENT)
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                data = json.loads(response.read().decode())
+            return [layer["id"] for layer in data.get("layers", [])]
+        except Exception:
+            # Fallback to known layer range if service info fails
+            return list(range(155))
+
+    def _extract_year_from_ortho_name(self, name: str) -> int | None:
+        """Extract the year from an ortho tile filename."""
+        import re
+
+        # Patterns like: e_06871152_12_19200_4bd_2021.jp2 or ClermontSE_tile2.sid
+        match = re.search(r"_(\d{4})\.", name)
+        if match:
+            return int(match.group(1))
+        return None
 
     def query_ortho_tiles(
         self,
@@ -445,82 +489,64 @@ class NYSTileDownloader:
         """
         Query orthoimagery tile index for tiles intersecting the search area.
 
-        The NYS orthoimagery index service provides tile boundaries with
-        download URLs to the FTP server.
+        Queries all layers in the ortho_indexes MapServer since different
+        layers contain different years/resolutions of imagery.
+
+        If a specific year is requested, only returns tiles from that year.
+        If 'latest' is requested, returns only the most recent year's tiles.
 
         Args:
             lat: Center latitude (WGS84)
             lon: Center longitude (WGS84)
             radius_meters: Search radius in meters
-            year: Imagery year ('2021', '2022', '2023', 'latest')
+            year: Imagery year ('2021', '2022', '2023', 'latest', etc.)
 
         Returns:
             List of tile info dicts with 'name' and 'url' keys
         """
-        # Map year to layer ID in the ortho_indexes service
-        # The service has multiple layers for different years
-        year_layer_map = {
-            "latest": 0,  # Latest composite
-            "2024": 1,
-            "2023": 2,
-            "2022": 3,
-            "2021": 4,
-            "2020": 5,
-            "2019": 6,
-            "2018": 7,
-        }
+        layer_ids = self._get_ortho_layer_ids()
+        all_tiles = []
+        seen_filenames: set[str] = set()
 
-        layer_id = year_layer_map.get(year.lower(), 0)
+        for layer_id in layer_ids:
+            try:
+                features = self._query_arcgis_service(
+                    ORTHO_INDEX_URL,
+                    layer_id,
+                    lat,
+                    lon,
+                    radius_meters,
+                    out_fields="*",
+                )
+            except Exception:
+                continue
 
-        try:
-            features = self._query_arcgis_service(
-                ORTHO_INDEX_URL,
-                layer_id,
-                lat,
-                lon,
-                radius_meters,
-                out_fields="*",
-            )
-        except Exception as e:
-            print(f"  Warning: Could not query ortho index service: {e}")
-            print("  Trying alternative method...")
-            return self._query_ortho_tiles_alternative(lat, lon, radius_meters, year)
+            tiles = self._parse_ortho_features(features, year)
+            for tile in tiles:
+                # Deduplicate by filename
+                if tile["name"] not in seen_filenames:
+                    seen_filenames.add(tile["name"])
+                    all_tiles.append(tile)
 
-        tiles = []
-        for attrs in features:
-            # Extract tile name and download URL from attributes
-            # Field names vary by layer, try common patterns
-            name = (
-                attrs.get("TILENAME")
-                or attrs.get("TileName")
-                or attrs.get("tile_name")
-                or attrs.get("NAME")
-                or attrs.get("name")
-                or "unknown"
-            )
+        # Filter by year
+        if year.lower() == "latest":
+            # Find the most recent year across all tiles
+            years_found = [
+                self._extract_year_from_ortho_name(t["name"])
+                for t in all_tiles
+            ]
+            years_found = [y for y in years_found if y is not None]
+            if years_found:
+                latest_year = max(years_found)
+                all_tiles = [
+                    t for t in all_tiles
+                    if self._extract_year_from_ortho_name(t["name"]) == latest_year
+                ]
+        else:
+            # Filter to only the requested year
+            all_tiles = [t for t in all_tiles if year in t.get("name", "")]
 
-            url = (
-                attrs.get("DOWNLOAD")
-                or attrs.get("Download")
-                or attrs.get("download_url")
-                or attrs.get("URL")
-                or attrs.get("url")
-                or attrs.get("DownloadURL")
-            )
-
-            if url:
-                # Ensure filename has extension
-                if not name.endswith((".tif", ".tiff", ".zip", ".sid")):
-                    name = f"{name}.zip"
-
-                tiles.append({
-                    "name": name,
-                    "url": url,
-                    "year": year,
-                    "attributes": attrs,
-                })
-
-        return tiles
+        return all_tiles
 
     def _query_ortho_tiles_alternative(
         self,
@@ -540,88 +566,90 @@ class NYSTileDownloader:
         print("  Using alternative tile discovery (limited coverage)")
         return []
 
+    def _get_lidar_layer_ids(self) -> list[int]:
+        """Get all layer IDs from the LiDAR index service."""
+        url = f"{LIDAR_INDEX_URL}?f=json"
+        try:
+            request = urllib.request.Request(url)
+            request.add_header("User-Agent", USER_AGENT)
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                data = json.loads(response.read().decode())
+            return [layer["id"] for layer in data.get("layers", [])]
+        except Exception:
+            # Fallback to known layer range if service info fails
+            return list(range(57))
+
+    def _extract_year_from_lidar_project(self, project: str) -> int | None:
+        """Extract the year from a LiDAR project name."""
+        import re
+
+        # Patterns like: "NYS - Southeast 4 County 2022", "USGS 3 County 2014", "USGS - 2024"
+        match = re.search(r"(\d{4})", project)
+        if match:
+            return int(match.group(1))
+        return None
+
     def query_lidar_tiles(
         self,
         lat: float,
         lon: float,
         radius_meters: float,
+        latest_only: bool = True,
     ) -> list[dict[str, Any]]:
         """
         Query LiDAR tile index for tiles intersecting the search area.
+
+        Queries all layers in the las_indexes MapServer since different
+        layers contain different LiDAR projects/collections.
 
         Args:
             lat: Center latitude (WGS84)
             lon: Center longitude (WGS84)
             radius_meters: Search radius in meters
+            latest_only: If True, only return tiles from the most recent year
 
         Returns:
             List of tile info dicts with 'name', 'url', and 'project' keys
         """
-        # Try the NYS LiDAR index service (las_indexes MapServer)
-        # The service has layers for different LiDAR projects/years
-        try:
-            # Query the main LiDAR index layer (layer 0 typically has all tiles)
-            features = self._query_arcgis_service(
-                LIDAR_INDEX_URL,
-                0,  # Main index layer
-                lat,
-                lon,
-                radius_meters,
-                out_fields="*",
-            )
-        except Exception as e:
-            print(f"  Warning: Could not query LiDAR index service: {e}")
-            print("  Trying alternative endpoint...")
-            return self._query_lidar_tiles_alternative(lat, lon, radius_meters)
+        layer_ids = self._get_lidar_layer_ids()
+        all_tiles = []
+        seen_filenames: set[str] = set()
 
-        tiles = []
-        for attrs in features:
-            # Extract tile information
-            name = (
-                attrs.get("TILENAME")
-                or attrs.get("TileName")
-                or attrs.get("tile_name")
-                or attrs.get("NAME")
-                or attrs.get("Tile")
-                or "unknown"
-            )
+        for layer_id in layer_ids:
+            try:
+                features = self._query_arcgis_service(
+                    LIDAR_INDEX_URL,
+                    layer_id,
+                    lat,
+                    lon,
+                    radius_meters,
+                    out_fields="*",
+                )
+            except Exception:
+                continue
 
-            project = (
-                attrs.get("PROJECT")
-                or attrs.get("Project")
-                or attrs.get("project_name")
-                or attrs.get("Collection")
-                or "unknown"
-            )
+            tiles = self._parse_lidar_features(features)
+            for tile in tiles:
+                # Deduplicate by filename
+                if tile["name"] not in seen_filenames:
+                    seen_filenames.add(tile["name"])
+                    all_tiles.append(tile)
 
-            url = (
-                attrs.get("DOWNLOAD")
-                or attrs.get("Download")
-                or attrs.get("download_url")
-                or attrs.get("URL")
-                or attrs.get("url")
-                or attrs.get("DownloadPath")
-            )
+        # Filter to latest year only if requested
+        if latest_only and all_tiles:
+            years_found = [
+                self._extract_year_from_lidar_project(t.get("project", ""))
+                for t in all_tiles
+            ]
+            years_found = [y for y in years_found if y is not None]
+            if years_found:
+                latest_year = max(years_found)
+                all_tiles = [
+                    t for t in all_tiles
+                    if self._extract_year_from_lidar_project(t.get("project", "")) == latest_year
+                ]
 
-            # If no direct URL, construct from FTP base
-            if not url and name != "unknown":
-                # Standard path structure: ftp.gis.ny.gov/elevation/LIDAR/{project}/{tile}.laz
-                url = f"{FTP_LIDAR_BASE}/{project}/{name}"
-                if not url.endswith((".laz", ".las", ".zip")):
-                    url = f"{url}.laz"
-
-            if url:
-                if not name.endswith((".laz", ".las", ".zip")):
-                    name = f"{name}.laz"
-
-                tiles.append({
-                    "name": name,
-                    "url": url,
-                    "project": project,
-                    "attributes": attrs,
-                })
-
-        return tiles
+        return all_tiles
 
     def _query_lidar_tiles_alternative(
         self,
@@ -676,12 +704,14 @@ class NYSTileDownloader:
                             if not name.endswith((".laz", ".las", ".zip")):
                                 name = f"{name}.laz"
 
-                            tiles.append({
-                                "name": name,
-                                "url": url,
-                                "project": project,
-                                "attributes": attrs,
-                            })
+                            tiles.append(
+                                {
+                                    "name": name,
+                                    "url": url,
+                                    "project": project,
+                                    "attributes": attrs,
+                                }
+                            )
                     if tiles:
                         return tiles
             except Exception:
@@ -725,12 +755,14 @@ class NYSTileDownloader:
                     # Construct a potential DEM URL for this project
                     dem_name = f"{project}_dem.tif"
                     dem_url = f"{FTP_DEM_BASE}/{project}/{dem_name}"
-                    tiles.append({
-                        "name": dem_name,
-                        "url": dem_url,
-                        "project": project,
-                        "attributes": {},
-                    })
+                    tiles.append(
+                        {
+                            "name": dem_name,
+                            "url": dem_url,
+                            "project": project,
+                            "attributes": {},
+                        }
+                    )
 
             return tiles
 
