@@ -172,14 +172,14 @@ def generate_contours(
     plt.close(fig)
 
     # Extract contour paths
+    # Note: matplotlib 3.8+ deprecated cs.collections, use cs.allsegs instead
     contours = []
-    for level, collection in zip(cs.levels, cs.collections):
+    for i, level in enumerate(cs.levels):
         polylines = []
-        for path in collection.get_paths():
-            # Get vertices, excluding any MOVETO codes that create gaps
-            vertices = path.vertices
-            if len(vertices) > 1:
-                polylines.append(vertices.copy())
+        # cs.allsegs[i] is a list of (N, 2) arrays for each segment at this level
+        for segment in cs.allsegs[i]:
+            if len(segment) > 1:
+                polylines.append(np.array(segment))
         if polylines:
             contours.append((float(level), polylines))
 
@@ -227,7 +227,7 @@ def export_to_dxf(
 
     # Create DXF document
     doc = ezdxf.new("R2010")  # AutoCAD 2010 format for broad compatibility
-    doc.units = units.US_FOOT  # Set units to feet
+    doc.units = units.FT  # Set units to feet
     msp = doc.modelspace()
 
     # Set up layers
