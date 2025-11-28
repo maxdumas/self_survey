@@ -69,6 +69,22 @@ def register(
             help="Output merged LAZ/LAS file path",
         ),
     ],
+    lat: Annotated[
+        float,
+        cyclopts.Parameter(
+            name="--lat",
+            help="Approximate latitude (WGS84) where the iPhone scan was taken. "
+            "Required for scans in local coordinates (no CRS metadata).",
+        ),
+    ],
+    lon: Annotated[
+        float,
+        cyclopts.Parameter(
+            name="--lon",
+            help="Approximate longitude (WGS84) where the iPhone scan was taken. "
+            "Required for scans in local coordinates (no CRS metadata).",
+        ),
+    ],
     icp_distance: Annotated[
         float,
         cyclopts.Parameter(
@@ -112,6 +128,12 @@ def register(
             help="Skip ICP alignment (use only if scans are already well-aligned)",
         ),
     ] = False,
+    no_replace: Annotated[
+        bool,
+        cyclopts.Parameter(
+            help="Don't replace reference points - blend both point clouds together",
+        ),
+    ] = False,
 ) -> None:
     """
     Register an iPhone LiDAR scan to NYS reference data and merge.
@@ -120,7 +142,7 @@ def register(
     to NYS reference data and produces a merged point cloud where iPhone data
     replaces NYS data in the overlap region.
     """
-    from self_survey.clip_to_radius import get_crs_from_las
+    from self_survey.clip_to_radius import get_crs_from_las, transform_latlon_to_crs
     from self_survey.register_iphone import (
         apply_transform_to_las,
         extract_ground_points,
@@ -163,8 +185,17 @@ def register(
     print("STEP 2: Loading and transforming iPhone scan")
     print("=" * 60)
 
+    # Transform the provided lat/lon to the reference CRS
+    # This will be used as the center point for local-coordinate scans
+    initial_x, initial_y = transform_latlon_to_crs(lat, lon, ref_crs)
+    print(f"\nInitial position (from --lat/--lon):")
+    print(f"  WGS84: ({lat}, {lon})")
+    print(f"  Reference CRS: ({initial_x:.2f}, {initial_y:.2f})")
+
     iphone_las, iphone_crs, transform_offset = load_and_transform_to_crs(
-        str(iphone_scan), ref_crs
+        str(iphone_scan), ref_crs,
+        initial_position=(initial_x, initial_y),
+        reference_las=ref_las,
     )
 
     print(f"  iPhone points: {len(iphone_las.points):,}")
@@ -193,28 +224,58 @@ def register(
         iphone_all_points = np.vstack((iphone_las.x, iphone_las.y, iphone_las.z)).T
         print(f"  iPhone points: {len(iphone_all_points):,}")
 
-        # Run ICP: iPhone all points -> Reference ground points
+        # Filter reference ground points to those near the iPhone scan
+        # This improves ICP performance and avoids confusion from distant points
+        iphone_x_min, iphone_x_max = iphone_las.x.min(), iphone_las.x.max()
+        iphone_y_min, iphone_y_max = iphone_las.y.min(), iphone_las.y.max()
+        iphone_z_min, iphone_z_max = iphone_las.z.min(), iphone_las.z.max()
+
+        # Add buffer around iPhone bounds for ICP search
+        buffer = icp_distance * 2
+        ref_ground_in_xy = (
+            (ref_ground[:, 0] >= iphone_x_min - buffer) & (ref_ground[:, 0] <= iphone_x_max + buffer) &
+            (ref_ground[:, 1] >= iphone_y_min - buffer) & (ref_ground[:, 1] <= iphone_y_max + buffer)
+        )
+        ref_ground_nearby = ref_ground[ref_ground_in_xy]
+        print(f"\n  Reference ground points near iPhone scan: {len(ref_ground_nearby):,}")
+
+        if len(ref_ground_nearby) > 0:
+            print(f"    Z range of those points: [{ref_ground_nearby[:, 2].min():.2f}, {ref_ground_nearby[:, 2].max():.2f}]")
+            print(f"    iPhone Z range: [{iphone_z_min:.2f}, {iphone_z_max:.2f}]")
+        else:
+            print("  ERROR: No reference ground points found near iPhone scan!")
+            print("  Check that --lat/--lon are correct.")
+
+        # Run ICP: iPhone all points -> nearby Reference ground points
         # Non-ground iPhone points won't find correspondences within icp_distance
         print("\nRunning ICP alignment...")
         print("  (iPhone all points → Reference ground points)")
         transform, icp_info = icp_align(
             source_points=iphone_all_points,
-            target_points=ref_ground,
+            target_points=ref_ground_nearby,
             max_correspondence_distance=icp_distance,
             max_iterations=icp_iterations,
         )
 
         # Check alignment quality
-        if icp_info["fitness"] < 0.1:
+        if icp_info["correspondence_count"] == 0:
+            print("\n  ERROR: ICP found no correspondences!")
+            print("  The point clouds may not be overlapping.")
+            print("  Skipping ICP transformation to preserve initial alignment.")
+            print("  Check that --lat/--lon are correct and --icp-distance is large enough.")
+        elif icp_info["fitness"] < 0.1:
             print("\n  WARNING: Low ICP fitness score.")
             print("  This is expected if the iPhone scan has many non-ground points.")
             print(
                 "  Check the translation values to verify alignment looks reasonable."
             )
-
-        # Apply transformation to iPhone scan
-        print("\nApplying transformation to iPhone scan...")
-        iphone_las = apply_transform_to_las(iphone_las, transform)
+            # Apply transformation to iPhone scan
+            print("\nApplying transformation to iPhone scan...")
+            iphone_las = apply_transform_to_las(iphone_las, transform)
+        else:
+            # Apply transformation to iPhone scan
+            print("\nApplying transformation to iPhone scan...")
+            iphone_las = apply_transform_to_las(iphone_las, transform)
 
         print(f"  New bounds X: [{iphone_las.x.min():.2f}, {iphone_las.x.max():.2f}]")
         print(f"  New bounds Y: [{iphone_las.y.min():.2f}, {iphone_las.y.max():.2f}]")
@@ -256,6 +317,7 @@ def register(
         reference_las=ref_las,
         iphone_las=iphone_las,
         replacement_radius=replacement_radius,
+        no_replace=no_replace,
     )
 
     # Step 6: Save output
