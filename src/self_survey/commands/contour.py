@@ -111,6 +111,7 @@ def contour(
         extract_ground_points,
         generate_contours,
     )
+    from self_survey.register_iphone import get_iphone_boundary_from_las
 
     # Validate inputs
     if not input_file.exists():
@@ -136,6 +137,13 @@ def contour(
     print(f"\nLoading {input_file}...")
     las = laspy.read(str(input_file))
     print(f"  Total points: {len(las.points):,}")
+
+    # Check for iPhone scan boundary VLR
+    boundary_data = get_iphone_boundary_from_las(las)
+    boundary_polygon = None
+    if boundary_data:
+        boundary_polygon = np.array(boundary_data["polygon"])
+        print(f"  iPhone scan boundary found ({len(boundary_polygon)} vertices)")
 
     ground_points = extract_ground_points(las, classification=ground_class)
     print(f"  Ground points (class={ground_class}): {len(ground_points):,}")
@@ -200,11 +208,14 @@ def contour(
             contours,
             str(output),
             index_interval=index_interval,
+            boundary_polygon=boundary_polygon,
         )
         print(f"  Major contours: {stats['major_contours']}")
         print(f"  Minor contours: {stats['minor_contours']}")
         print(f"  Total polylines: {stats['total_polylines']:,}")
         print(f"  Total vertices: {stats['total_vertices']:,}")
+        if stats.get("has_boundary"):
+            print(f"  iPhone boundary: {stats['boundary_vertices']} vertices")
     else:
         # GeoJSON
         stats = export_to_shapefile(contours, str(output))

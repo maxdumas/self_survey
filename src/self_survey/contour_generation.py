@@ -193,6 +193,7 @@ def export_to_dxf(
     index_interval: int = 5,
     major_layer: str | None = None,
     minor_layer: str | None = None,
+    boundary_polygon: NDArray[np.float64] | None = None,
 ) -> dict[str, Any]:
     """
     Export contours to DXF format.
@@ -216,6 +217,9 @@ def export_to_dxf(
         Layer name for major contours. Default: "{prefix}_MAJOR"
     minor_layer : str, optional
         Layer name for minor contours. Default: "{prefix}_MINOR"
+    boundary_polygon : ndarray, optional
+        Nx2 array of (x, y) coordinates forming the iPhone scan boundary.
+        If provided, renders as a filled HATCH on the IPHONE_BOUNDARY layer.
 
     Returns
     -------
@@ -264,14 +268,11 @@ def export_to_dxf(
             if len(polyline) < 2:
                 continue
 
-            # Create 3D polyline with elevation
+            # Create true 3D polyline for Revit compatibility
             points_3d = [(x, y, elevation) for x, y in polyline]
-            msp.add_lwpolyline(
-                [(x, y) for x, y, z in points_3d],
-                dxfattribs={
-                    "layer": layer,
-                    "elevation": elevation,
-                },
+            msp.add_polyline3d(
+                points_3d,
+                dxfattribs={"layer": layer},
             )
 
             stats["total_polylines"] += 1
@@ -281,6 +282,35 @@ def export_to_dxf(
             stats["major_contours"] += 1
         else:
             stats["minor_contours"] += 1
+
+    # Add iPhone scan boundary if provided
+    if boundary_polygon is not None and len(boundary_polygon) >= 3:
+        # Create boundary layer (light green, dashed outline)
+        doc.layers.add("IPHONE_BOUNDARY", color=3)  # Green
+
+        # Add filled HATCH for the boundary region
+        hatch = msp.add_hatch(color=3)  # Green fill
+        hatch.set_pattern_fill("SOLID")
+        hatch.dxf.layer = "IPHONE_BOUNDARY"
+
+        # Add the polygon path (must be closed)
+        hatch.paths.add_polyline_path(
+            [(x, y) for x, y in boundary_polygon],
+            is_closed=True,
+        )
+
+        # Also add outline polyline for visibility
+        msp.add_lwpolyline(
+            [(x, y) for x, y in boundary_polygon],
+            close=True,
+            dxfattribs={
+                "layer": "IPHONE_BOUNDARY",
+                "color": 3,
+            },
+        )
+
+        stats["has_boundary"] = True
+        stats["boundary_vertices"] = len(boundary_polygon)
 
     # Save DXF
     doc.saveas(output_path)

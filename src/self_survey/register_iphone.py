@@ -44,10 +44,13 @@ iPhone data REPLACES (not blends with) NYS data in the overlap region.
 This avoids double-density artifacts and provides clear data provenance.
 """
 
+import json
+
 import laspy
 import numpy as np
 import open3d as o3d
 from pyproj import CRS, Transformer
+from scipy.spatial import ConvexHull
 
 from self_survey.clip_to_radius import get_crs_from_las
 
@@ -58,6 +61,7 @@ __all__ = [
     "apply_transform_to_las",
     "transfer_ground_classification",
     "merge_with_replacement",
+    "get_iphone_boundary_from_las",
 ]
 
 
@@ -582,7 +586,6 @@ def transfer_ground_classification(
 def merge_with_replacement(
     reference_las: laspy.LasData,
     iphone_las: laspy.LasData,
-    replacement_radius: float | None = None,
     no_replace: bool = False,
 ) -> laspy.LasData:
     """
@@ -599,8 +602,7 @@ def merge_with_replacement(
     3. Prioritizes higher-resolution iPhone data where available
     4. Simplifies downstream processing
 
-    The overlap region is defined as a circle centered on the iPhone scan's
-    centroid with radius equal to the scan's maximum extent (plus 10% buffer).
+    The overlap region is defined by the convex hull of the iPhone scan points.
 
     Visualization (replacement mode):
         ┌─────────────────────────────────────┐
@@ -620,19 +622,15 @@ def merge_with_replacement(
 
     Args:
         reference_las: Reference LAS data (NYS). Lower resolution but covers
-            larger area. Points within the replacement region will be excluded
-            unless no_replace=True.
+            larger area. Points within the iPhone scan convex hull will be
+            excluded unless no_replace=True.
         iphone_las: iPhone LAS data (from Polycam). Higher resolution, takes
             priority in the overlap region. Should be aligned via ICP first.
-        replacement_radius: If provided, defines the circular region around the
-            iPhone scan center where reference points are excluded. If None,
-            auto-calculated as 1.1 × (max distance from centroid to any iPhone point).
-            Ignored if no_replace=True.
         no_replace: If True, keep all reference points (blend instead of replace).
 
     Returns:
         Merged LAS data with:
-        - Reference points (all if no_replace, else only outside replacement region)
+        - Reference points (all if no_replace, else only outside convex hull)
         - All iPhone points
         - Attributes (RGB, classification, intensity) preserved from both sources
     """
@@ -647,30 +645,29 @@ def merge_with_replacement(
     print(f"  Reference points: {len(ref_points):,}")
     print(f"  iPhone points: {len(iphone_points):,}")
 
-    # Determine replacement region from iPhone scan extent
+    # Compute iPhone scan center for metadata
     iphone_center = np.mean(iphone_points[:, :2], axis=0)
-    iphone_extent = np.max(np.linalg.norm(iphone_points[:, :2] - iphone_center, axis=1))
-
-    if replacement_radius is None:
-        # Use iPhone scan extent as replacement radius
-        replacement_radius = iphone_extent * 1.1  # 10% buffer
-
     print(f"  iPhone scan center: ({iphone_center[0]:.2f}, {iphone_center[1]:.2f})")
-    print(f"  iPhone scan extent: {iphone_extent:.2f}")
+
+    # Compute convex hull of iPhone points for boundary
+    hull = ConvexHull(iphone_points[:, :2])
+    boundary_polygon = iphone_points[hull.vertices, :2]
+    print(f"  iPhone boundary: convex hull with {len(boundary_polygon)} vertices")
 
     if no_replace:
         # Keep all reference points
         keep_mask = np.ones(len(ref_points), dtype=bool)
         print(f"  Blending mode: keeping all {len(ref_points):,} reference points")
     else:
-        print(f"  Replacement radius: {replacement_radius:.2f}")
+        # Find reference points outside the iPhone scan convex hull
+        # Use matplotlib's Path for point-in-polygon test
+        from matplotlib.path import Path
 
-        # Find reference points outside the iPhone scan region
-        # Using a simple circular region around iPhone center
-        ref_distances = np.linalg.norm(ref_points[:, :2] - iphone_center, axis=1)
-        keep_mask = ref_distances > replacement_radius
+        hull_path = Path(boundary_polygon)
+        inside_hull = hull_path.contains_points(ref_points[:, :2])
+        keep_mask = ~inside_hull
 
-        print(f"  Reference points kept (outside overlap): {np.sum(keep_mask):,}")
+        print(f"  Reference points kept (outside hull): {np.sum(keep_mask):,}")
         print(f"  Reference points replaced: {np.sum(~keep_mask):,}")
 
     kept_ref_points = ref_points[keep_mask]
@@ -721,6 +718,20 @@ def merge_with_replacement(
 
     for vlr in reference_las.header.vlrs:
         new_header.vlrs.append(vlr)
+
+    # Add iPhone scan boundary as custom VLR (reuse convex hull computed earlier)
+    boundary_data = {
+        "type": "iphone_scan_boundary",
+        "polygon": boundary_polygon.tolist(),
+        "center": iphone_center.tolist(),
+    }
+    boundary_vlr = laspy.VLR(
+        user_id="self-survey",
+        record_id=1001,
+        record_data=json.dumps(boundary_data).encode("utf-8"),
+        description="iPhone scan boundary from registration",
+    )
+    new_header.vlrs.append(boundary_vlr)
 
     merged_las = laspy.LasData(new_header)
     merged_las.x = merged_x
@@ -806,3 +817,26 @@ def merge_with_replacement(
         )
 
     return merged_las
+
+
+def get_iphone_boundary_from_las(las: laspy.LasData) -> dict | None:
+    """
+    Read iPhone scan boundary VLR if present in a LAS file.
+
+    The boundary is stored during merge_with_replacement() as a custom VLR
+    with user_id="self-survey" and record_id=1001.
+
+    Args:
+        las: LAS data to check for boundary VLR
+
+    Returns:
+        Dictionary with boundary data if found:
+        - "type": "iphone_scan_boundary"
+        - "polygon": List of [x, y] coordinates forming the convex hull
+        - "center": [x, y] center point of the iPhone scan
+        Returns None if no boundary VLR is present.
+    """
+    for vlr in las.header.vlrs:
+        if vlr.user_id == "self-survey" and vlr.record_id == 1001:
+            return json.loads(vlr.record_data.decode("utf-8"))
+    return None

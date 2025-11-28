@@ -115,13 +115,6 @@ def register(
             help="Vertical tolerance for ground classification transfer (file units)",
         ),
     ] = 0.5,
-    replacement_radius: Annotated[
-        float | None,
-        cyclopts.Parameter(
-            help="Radius around iPhone scan center to replace reference points. "
-            "If not specified, auto-calculated from iPhone scan extent.",
-        ),
-    ] = None,
     skip_icp: Annotated[
         bool,
         cyclopts.Parameter(
@@ -316,7 +309,6 @@ def register(
     merged_las = merge_with_replacement(
         reference_las=ref_las,
         iphone_las=iphone_las,
-        replacement_radius=replacement_radius,
         no_replace=no_replace,
     )
 
