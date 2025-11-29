@@ -17,19 +17,29 @@ import cyclopts
 
 
 def download(
+    *,
     lat: Annotated[
         float,
-        cyclopts.Parameter(help="Center latitude (WGS84)"),
+        cyclopts.Parameter(
+            name="--lat",
+            help="Center latitude (WGS84)",
+        ),
     ],
     lon: Annotated[
         float,
-        cyclopts.Parameter(help="Center longitude (WGS84)"),
+        cyclopts.Parameter(
+            name="--lon",
+            help="Center longitude (WGS84)",
+        ),
     ],
     radius: Annotated[
         float,
-        cyclopts.Parameter(help="Search radius in meters"),
+        cyclopts.Parameter(
+            name="--radius",
+            alias="-r",
+            help="Search radius in meters",
+        ),
     ],
-    *,
     output_dir: Annotated[
         Path,
         cyclopts.Parameter(
@@ -89,7 +99,7 @@ def download(
     the matching tiles to the output directory.
 
     Example:
-        preprocess download 42.4532 -73.7891 500 -o ./tiles/
+        preprocess download --lat 42.4532 --lon -73.7891 -r 500 -o ./tiles/
 
     This will download all available LiDAR, DEM, and orthoimagery tiles
     within 500 meters of the specified point.

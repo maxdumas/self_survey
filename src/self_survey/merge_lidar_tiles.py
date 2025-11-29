@@ -120,11 +120,32 @@ def save_as_laz(
     print(f"\nSaving to {output_path}...")
 
     points = np.asarray(pcd.points)
+    has_colors = pcd.has_colors()
 
-    # Create new LAS file with same point format as source
-    header = laspy.LasHeader(
-        point_format=metadata["header"].point_format, version="1.4"
-    )
+    # Determine point format
+    # If we have colors, we need a format that supports RGB
+    # Point formats with RGB: 2, 3, 5, 7, 8, 10
+    # Format 7 is like format 6 but with RGB support (LAS 1.4)
+    # Format 2 is like format 0 but with RGB support (LAS 1.2+)
+    source_format = metadata["header"].point_format.id
+
+    if has_colors:
+        # Map non-RGB formats to their RGB equivalents
+        format_mapping = {
+            0: 2,  # Format 0 -> Format 2 (adds RGB)
+            1: 3,  # Format 1 -> Format 3 (adds RGB)
+            6: 7,  # Format 6 -> Format 7 (adds RGB)
+            9: 10, # Format 9 -> Format 10 (adds RGB)
+        }
+        point_format_id = format_mapping.get(source_format, source_format)
+
+        # If source already supports RGB, keep it
+        if source_format in [2, 3, 5, 7, 8, 10]:
+            point_format_id = source_format
+    else:
+        point_format_id = source_format
+
+    header = laspy.LasHeader(point_format=point_format_id, version="1.4")
     header.offsets = np.min(points, axis=0)
     header.scales = [0.001, 0.001, 0.001]  # 1mm precision
 
@@ -148,7 +169,7 @@ def save_as_laz(
         las.number_of_returns = metadata["number_of_returns"]
 
     # Set colors if present
-    if pcd.has_colors():
+    if has_colors:
         colors = np.asarray(pcd.colors)
         las.red = (colors[:, 0] * 65535).astype(np.uint16)
         las.green = (colors[:, 1] * 65535).astype(np.uint16)

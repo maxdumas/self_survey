@@ -11,7 +11,7 @@ Usage
     preprocess parcel "123.45-6-7" -m "Albany" -o parcel_survey.laz
 
     # Download NYS tiles for a location
-    preprocess download 42.4532 -73.7891 500 -o ./tiles/
+    preprocess download --lat 42.4532 --lon -73.7891 -r 500 -o ./tiles/
 
     # Ingest NYS LiDAR data
     preprocess ingest tile1.laz tile2.laz --ortho ortho.tif \\
